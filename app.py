@@ -77,7 +77,7 @@ if uploaded_file is not None:
     all_stocks = bhav_data['Symbol'].unique()
     results_list = []
     
-    # Corrected line to handle the column name with a space
+    # Corrected line to handle the column name with a space and to filter for Nifty 500
     nifty500_data = index_data[index_data['Index Name'].str.contains('nifty 500', case=False)]
 
     if nifty500_data.empty or len(nifty500_data) < 55:
@@ -93,7 +93,12 @@ if uploaded_file is not None:
 
     for symbol in all_stocks:
         stock_df = bhav_data[bhav_data['Symbol'] == symbol].copy()
-        high_52w = high_data[high_data['Symbol'] == symbol].iloc[0]
+        
+        # FIX: Check if stock exists in 52w High data before trying to access it
+        high_52w_filtered = high_data[high_data['Symbol'] == symbol]
+        if high_52w_filtered.empty:
+            continue
+        high_52w = high_52w_filtered.iloc[0]
 
         if len(stock_df) < 55:
             continue
