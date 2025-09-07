@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from scipy.stats import rankdata
 
 # Set Streamlit page configuration
 st.set_page_config(layout="wide", page_title="NSE Stock Screener")
@@ -75,12 +76,14 @@ if uploaded_file is not None:
     # --- Main Analysis Loop ---
     all_stocks = bhav_data['Symbol'].unique()
     results_list = []
-    nifty500_data = index_data[index_data.index_name.str.contains('nifty 500', case=False)]
+    
+    # Corrected line to handle the column name with a space
+    nifty500_data = index_data[index_data['Index Name'].str.contains('nifty 500', case=False)]
 
     if nifty500_data.empty or len(nifty500_data) < 55:
         st.warning("Nifty 500 index data not found or insufficient. Skipping RS calculations.")
-        nifty500_close_55d_ago = None
-        nifty500_close_21d_ago = None
+        I55d_Returns = np.nan
+        I21d_Returns = np.nan
     else:
         nifty500_close_55d_ago = nifty500_data['Close'].iloc[-55]
         nifty500_close_21d_ago = nifty500_data['Close'].iloc[-21]
@@ -104,8 +107,8 @@ if uploaded_file is not None:
         S21d_Returns = today_close / close_21d_ago
         
         # Relative Strength
-        RS55 = S55d_Returns / I55d_Returns if I55d_Returns else np.nan
-        RS21 = S21d_Returns / I21d_Returns if I21d_Returns else np.nan
+        RS55 = S55d_Returns / I55d_Returns if not np.isnan(I55d_Returns) else np.nan
+        RS21 = S21d_Returns / I21d_Returns if not np.isnan(I21d_Returns) else np.nan
         
         # Momentum & Accumulation
         _52wH = high_52w['52wH']
@@ -117,20 +120,20 @@ if uploaded_file is not None:
         MFI21_V = calculate_mfi(stock_df['High'], stock_df['Low'], stock_df['Close'], stock_df['Volume'], period=21).iloc[-1]
         MFI21_D = calculate_mfi(stock_df['High'], stock_df['Low'], stock_df['Close'], stock_df['Deliverable Volume'], period=21).iloc[-1]
 
-        AD = MFI21_D / MFI55_D if MFI55_D else np.nan
-        Strength_AD = MFI21_D / MFI21_V if MFI21_V else np.nan
-        Mom_Conf = MFI21_D / RSI21 if RSI21 else np.nan
-        Mom_Osc = RS21 / RS55 if RS55 else np.nan
+        AD = MFI21_D / MFI55_D if not np.isnan(MFI55_D) else np.nan
+        Strength_AD = MFI21_D / MFI21_V if not np.isnan(MFI21_V) else np.nan
+        Mom_Conf = MFI21_D / RSI21 if not np.isnan(RSI21) else np.nan
+        Mom_Osc = RS21 / RS55 if not np.isnan(RS55) else np.nan
 
         # PVA Signals
         avg_delivery_7d = stock_df['Deliverable Volume'].iloc[-7:].mean()
-        today_close_prev_close = today_close / stock_df['Close'].iloc[-2] - 1
-        yest_close_day_before = stock_df['Close'].iloc[-2] / stock_df['Close'].iloc[-3] - 1
+        today_close_prev_close = today_close / stock_df['Close'].iloc[-2]
+        yest_close_day_before = stock_df['Close'].iloc[-2] / stock_df['Close'].iloc[-3]
         
         pva = "None"
-        if today_close_prev_close > 0 and stock_df['Deliverable Volume'].iloc[-1] > avg_delivery_7d and yest_close_day_before > 0 and stock_df['Deliverable Volume'].iloc[-2] > avg_delivery_7d:
+        if today_close_prev_close > 1 and stock_df['Deliverable Volume'].iloc[-1] > avg_delivery_7d and yest_close_day_before > 1 and stock_df['Deliverable Volume'].iloc[-2] > avg_delivery_7d:
             pva = "tbyb (Buy)"
-        elif today_close_prev_close < 0 and stock_df['Deliverable Volume'].iloc[-1] > avg_delivery_7d and yest_close_day_before < 0 and stock_df['Deliverable Volume'].iloc[-2] > avg_delivery_7d:
+        elif today_close_prev_close < 1 and stock_df['Deliverable Volume'].iloc[-1] > avg_delivery_7d and yest_close_day_before < 1 and stock_df['Deliverable Volume'].iloc[-2] > avg_delivery_7d:
             pva = "tsys (Sell)"
         
         # Screening Conditions
@@ -166,19 +169,25 @@ if uploaded_file is not None:
             'Mom_Osc': Mom_Osc
         })
 
-    # Create a DataFrame and display results
+    # Create a DataFrame and calculate percentile ranks
     results_df = pd.DataFrame(results_list)
 
     if not results_df.empty:
-        # Sort symbols as requested
-        entry_signals = results_df[results_df['Signal'] == 'Entry'].sort_values('Symbol')
-        exit_signals = results_df[results_df['Signal'] == 'Exit'].sort_values('Symbol')
-
+        # Calculate percentile scores as requested in the prompt
+        results_df['p-52wH'] = (rankdata(results_df['52wHZ']) / len(results_df))
+        results_df['p-RSI21'] = (rankdata(results_df['RSI21']) / len(results_df))
+        results_df['p-MFI21_D'] = (rankdata(results_df['MFI21_D']) / len(results_df))
+        results_df['p-MFI55_D'] = (rankdata(results_df['MFI55_D']) / len(results_df))
+        
+        results_df['p-Mom'] = (results_df['p-52wH'] + results_df['p-RSI21']) / 2
+        results_df['p-AD'] = results_df['p-MFI21_D'] / results_df['p-MFI55_D']
+        
         # Display tables with tabs
         st.header("Screener Results")
         tab_entry, tab_exit, tab_all = st.tabs(["Entry Signals", "Exit Signals", "All Stocks"])
 
         with tab_entry:
+            entry_signals = results_df[results_df['Signal'] == 'Entry'].sort_values('Symbol')
             if not entry_signals.empty:
                 st.subheader("Stocks with Favorable Entry Conditions")
                 st.dataframe(entry_signals, use_container_width=True)
@@ -186,6 +195,7 @@ if uploaded_file is not None:
                 st.info("No stocks currently meet the entry criteria.")
 
         with tab_exit:
+            exit_signals = results_df[results_df['Signal'] == 'Exit'].sort_values('Symbol')
             if not exit_signals.empty:
                 st.subheader("Stocks with Loss of Favorable Conditions (Exit Signals)")
                 st.dataframe(exit_signals, use_container_width=True)
@@ -202,4 +212,3 @@ if uploaded_file is not None:
 else:
     # Instructions for first-time use
     st.info("Please upload your 'stock_data.xlsx' file to begin the analysis. The file should contain 'BhavData', 'IndexData', and '52w High' sheets with the specified columns.")
-    
