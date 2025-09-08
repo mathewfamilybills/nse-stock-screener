@@ -143,8 +143,11 @@ if uploaded_file is not None:
         
         # Screening Conditions
         signal = "None"
-        # RS Entry Condition
-        rs_entry = (RS55 > 0.93 and RS55 < 1 and Mom_Osc > 1 and Mom_Conf > 1 and Strength_AD > 1 and AD > 1 and _52wHZ < 1.25)
+        # RS Entry Condition with the new OR condition
+        rs_entry = (
+            (RS55 > 0.93 and RS55 < 1 and Mom_Osc > 1 and Mom_Conf > 1 and Strength_AD > 1 and AD > 1 and _52wHZ < 1.25) or
+            (AD > 1.2 and Mom_Conf < 0.8 and RS21 > 1)
+        )
         # RS Exit Condition
         rs_exit = (
             (RS55 > 1 and RS55 < 1.07 and Mom_Osc < 1 and Mom_Conf < 1 and Strength_AD < 1 and AD < 1 and _52wHZ > 1.1) or
