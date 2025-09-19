@@ -191,7 +191,9 @@ if uploaded_file is not None:
             fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
 
             # Define a set of darker, distinct colors
-            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'] # Darker blue, orange, green, red
+            # Original: colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'] # Darker blue, orange, green, red
+            # Modified as requested:
+            colors = ['#000000', '#ff7f0e', '#1f77b4', '#d62728'] # Black, orange, darker blue, red
 
             for i, col in enumerate(plot_df.columns):
                 fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df[col], mode='lines', name=col,
