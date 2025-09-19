@@ -178,33 +178,42 @@ if uploaded_file is not None:
             graph_data['MFI21_V'] = calculate_mfi(graph_data['High'], graph_data['Low'], graph_data['Close'], graph_data['Volume'], period=21)
             graph_data['MFI55_D'] = calculate_mfi(graph_data['High'], graph_data['Low'], graph_data['Close'], graph_data['Deliverable Volume'], period=55)
 
-            # Calculate final ratios for plotting
+            # Calculate final ratios for plotting and tabular display
             plot_df = pd.DataFrame(index=graph_data.index)
-            plot_df['AD (MFI21D/MFI55D)'] = graph_data['MFI21_D'] / graph_data['MFI55_D']
-            plot_df['Strength_AD (MFI21D/MFI21V)'] = graph_data['MFI21_D'] / graph_data['MFI21_V']
-            plot_df['Mom_Conf (MFI21D/RSI21)'] = graph_data['MFI21_D'] / graph_data['RSI21']
-            plot_df['Mom_Osc (RS21/RS55)'] = graph_data['RS21'] / graph_data['RS55']
+            plot_df['RS21'] = graph_data['RS21']
+            plot_df['RS55'] = graph_data['RS55']
+            plot_df['MFI21_D'] = graph_data['MFI21_D']
+            plot_df['MFI21_V'] = graph_data['MFI21_V']
+            plot_df['MFI55_D'] = graph_data['MFI55_D']
+            plot_df['RSI21'] = graph_data['RSI21']
+            plot_df['52wHZ'] = high_data[high_data['Symbol'] == selected_symbol].iloc[0]['52wH'] / graph_data['Close']
+            plot_df['AD'] = graph_data['MFI21_D'] / graph_data['MFI55_D']
+            plot_df['Strength_AD'] = graph_data['MFI21_D'] / graph_data['MFI21_V']
+            plot_df['Mom_Conf'] = graph_data['MFI21_D'] / graph_data['RSI21']
+            plot_df['Mom_Osc'] = graph_data['RS21'] / graph_data['RS55']
 
-            plot_df = plot_df.tail(60) # Plot last 60 days
-
+            plot_df_graph = plot_df[['AD', 'Strength_AD', 'Mom_Conf', 'Mom_Osc']].tail(60) # Only plot these ratios
+            
             fig = go.Figure()
             fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
 
             # Define a set of darker, distinct colors
             colors = ['#000000', '#ff7f0e', '#1f77b4', '#d62728'] # Black, orange, darker blue, red
 
-            for i, col in enumerate(plot_df.columns):
-                fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df[col], mode='lines', name=col,
+            for i, col in enumerate(plot_df_graph.columns):
+                fig.add_trace(go.Scatter(x=plot_df_graph.index, y=plot_df_graph[col], mode='lines', name=col,
                                          line=dict(color=colors[i % len(colors)]))) # Assign color
 
             fig.update_layout(title=f'Dual Momentum Ratios for {selected_symbol}',
                               xaxis_title="Date", yaxis_title="Ratio Value", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
             
-            # --- MODIFIED: Display tabular data below the graph ---
-            st.subheader(f"Raw Data for {selected_symbol}")
-            stock_df_display = stock_df_graph.tail(60).copy()
-            st.dataframe(stock_df_display.round(2), use_container_width=True)
+            # --- MODIFIED: Display rolling 21-day tabular data below the graph ---
+            st.subheader(f"Rolling 21-Day Data for {selected_symbol}")
+            
+            # Filter the plot_df for the last 21 days
+            df_display = plot_df.tail(21).round(4)
+            st.dataframe(df_display, use_container_width=True)
             
 else:
     st.info("Please upload your 'stock_data.xlsx' file to begin the analysis.")
