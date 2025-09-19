@@ -58,7 +58,8 @@ if uploaded_file is not None:
         loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
         
         # Handle division by zero
-        rs = gain / loss
+        with np.errstate(divide='ignore', invalid='ignore'):
+            rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
         return rsi
 
@@ -75,7 +76,7 @@ if uploaded_file is not None:
         
         # Handle division by zero and NaNs
         with np.errstate(divide='ignore', invalid='ignore'):
-            mfi = 100 - (100 / (1 + positive_mf / negative_mf))
+            mfi = 100 - (100 / (1 + positive_mf / (negative_mf + 1e-9))) # +1e-9 is a small number to prevent division by zero
         return mfi
 
     # --- Main Analysis Loop ---
@@ -224,6 +225,13 @@ if uploaded_file is not None:
             # Filter data for the selected symbol and required historical period
             stock_df_graph = bhav_data[bhav_data['Symbol'] == selected_symbol].copy()
             
+            # --- DEBUGGING START ---
+            st.write("### Debugging Info for Graphing")
+            st.write(f"Shape of data for {selected_symbol}:", stock_df_graph.shape)
+            st.write("Latest 5 rows of input data:")
+            st.dataframe(stock_df_graph.tail(5))
+            # --- DEBUGGING END ---
+
             if len(stock_df_graph) < 55:
                 st.warning("Insufficient data for the selected symbol to generate graphs.")
             else:
@@ -232,6 +240,14 @@ if uploaded_file is not None:
                 stock_df_graph['MFI21_D'] = calculate_mfi(stock_df_graph['High'], stock_df_graph['Low'], stock_df_graph['Close'], stock_df_graph['Deliverable Volume'], period=21)
                 stock_df_graph['MFI21_V'] = calculate_mfi(stock_df_graph['High'], stock_df_graph['Low'], stock_df_graph['Close'], stock_df_graph['Volume'], period=21)
                 stock_df_graph['MFI55_D'] = calculate_mfi(stock_df_graph['High'], stock_df_graph['Low'], stock_df_graph['Close'], stock_df_graph['Deliverable Volume'], period=55)
+
+                # --- DEBUGGING START ---
+                st.write("Latest indicator values:")
+                st.write(f"RSI21: {stock_df_graph['RSI21'].iloc[-1]}")
+                st.write(f"MFI21_D: {stock_df_graph['MFI21_D'].iloc[-1]}")
+                st.write(f"MFI21_V: {stock_df_graph['MFI21_V'].iloc[-1]}")
+                st.write(f"MFI55_D: {stock_df_graph['MFI55_D'].iloc[-1]}")
+                # --- DEBUGGING END ---
 
                 stock_df_graph['S21d_Returns'] = stock_df_graph['Close'].pct_change(periods=20).add(1)
                 stock_df_graph['S55d_Returns'] = stock_df_graph['Close'].pct_change(periods=54).add(1)
@@ -244,6 +260,11 @@ if uploaded_file is not None:
                 plot_df['MFI21D / MFI21V'] = stock_df_graph['MFI21_D'] / stock_df_graph['MFI21_V']
                 plot_df['MFI21D / RSI21'] = stock_df_graph['MFI21_D'] / stock_df_graph['RSI21']
                 plot_df['RS21 / RS55'] = stock_df_graph['RS21'] / stock_df_graph['RS55']
+                
+                # --- DEBUGGING START ---
+                st.write("Latest 5 rows of calculated ratios (before filtering):")
+                st.dataframe(plot_df.tail(5))
+                # --- DEBUGGING END ---
 
                 # Take the last 21 days for plotting
                 plot_df = plot_df.tail(21)
