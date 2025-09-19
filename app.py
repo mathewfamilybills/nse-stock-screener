@@ -76,14 +76,13 @@ if uploaded_file is not None:
         
         # Handle division by zero and NaNs by adding a small value to the denominator
         with np.errstate(divide='ignore', invalid='ignore'):
-            mfi = 100 - (100 / (1 + positive_mf / (negative_mf + 1e-9))) # +1e-9 is a small number to prevent division by zero
+            mfi = 100 - (100 / (1 + positive_mf / (negative_mf + 1e-9)))
         return mfi
 
     # --- Main Analysis Loop ---
     all_stocks = bhav_data['Symbol'].unique()
     results_list = []
     
-    # Corrected line to handle the column name with a space and to filter for Nifty 500
     nifty500_data = index_data[index_data['Index Name'].str.contains('nifty 500', case=False)]
 
     if nifty500_data.empty or len(nifty500_data) < 55:
@@ -100,7 +99,6 @@ if uploaded_file is not None:
     for symbol in all_stocks:
         stock_df = bhav_data[bhav_data['Symbol'] == symbol].copy()
         
-        # FIX: Check if stock exists in 52w High data before trying to access it
         high_52w_filtered = high_data[high_data['Symbol'] == symbol]
         if high_52w_filtered.empty:
             continue
@@ -113,15 +111,12 @@ if uploaded_file is not None:
         close_55d_ago = stock_df['Close'].iloc[-55]
         close_21d_ago = stock_df['Close'].iloc[-21]
         
-        # Returns
         S55d_Returns = today_close / close_55d_ago
         S21d_Returns = today_close / close_21d_ago
         
-        # Relative Strength
         RS55 = S55d_Returns / I55d_Returns if not np.isnan(I55d_Returns) else np.nan
         RS21 = S21d_Returns / I21d_Returns if not np.isnan(I21d_Returns) else np.nan
         
-        # Momentum & Accumulation
         _52wH = high_52w['52wH']
         LTP = today_close
         _52wHZ = _52wH / LTP if LTP > 0 else np.nan
@@ -136,7 +131,6 @@ if uploaded_file is not None:
         Mom_Conf = MFI21_D / RSI21 if not np.isnan(RSI21) else np.nan
         Mom_Osc = RS21 / RS55 if not np.isnan(RS55) else np.nan
 
-        # PVA Signals
         avg_delivery_7d = stock_df['Deliverable Volume'].iloc[-7:].mean()
         today_close_prev_close = today_close / stock_df['Close'].iloc[-2]
         yest_close_day_before = stock_df['Close'].iloc[-2] / stock_df['Close'].iloc[-3]
@@ -147,14 +141,11 @@ if uploaded_file is not None:
         elif today_close_prev_close < 1 and stock_df['Deliverable Volume'].iloc[-1] > avg_delivery_7d and yest_close_day_before < 1 and stock_df['Deliverable Volume'].iloc[-2] > avg_delivery_7d:
             pva = "tsys (Sell)"
         
-        # Screening Conditions
         signal = "None"
-        # RS Entry Condition with the new OR condition
         rs_entry = (
             (RS55 > 0.93 and RS55 < 1 and Mom_Osc > 1 and Mom_Conf > 1 and Strength_AD > 1 and AD > 1 and _52wHZ < 1.25) or
             (AD > 1.2 and Mom_Conf < 0.8 and RS21 > 1)
         )
-        # RS Exit Condition
         rs_exit = (
             (RS55 > 1 and RS55 < 1.07 and Mom_Osc < 1 and Mom_Conf < 1 and Strength_AD < 1 and AD < 1 and _52wHZ > 1.1) or
             (RS55 > 1 and RS55 < 1.07 and Mom_Osc < 1) or
@@ -183,11 +174,9 @@ if uploaded_file is not None:
             'Mom_Osc': Mom_Osc
         })
 
-    # Create a DataFrame
     results_df = pd.DataFrame(results_list)
 
     if not results_df.empty:
-        # Display tables with tabs
         st.header("Screener Results")
         tab_entry, tab_exit, tab_all = st.tabs(["Entry Signals", "Exit Signals", "All Stocks"])
 
@@ -220,15 +209,13 @@ if uploaded_file is not None:
     
     if st.sidebar.button("Generate Graph"):
         if selected_symbol and selected_symbol in all_stocks:
-            st.subheader(f"21-Day Rolling Data for {selected_symbol}")
+            st.subheader(f"Dual Momentum Ratios for {selected_symbol}")
             
-            # Filter data for the selected symbol and required historical period
             stock_df_graph = bhav_data[bhav_data['Symbol'] == selected_symbol].copy()
             
             if len(stock_df_graph) < 55:
                 st.warning("Insufficient data for the selected symbol to generate graphs.")
             else:
-                # Calculate RSI, MFI and RS for the entire period
                 stock_df_graph['RSI21'] = calculate_rsi(stock_df_graph['Close'], period=21)
                 stock_df_graph['MFI21_D'] = calculate_mfi(stock_df_graph['High'], stock_df_graph['Low'], stock_df_graph['Close'], stock_df_graph['Deliverable Volume'], period=21)
                 stock_df_graph['MFI21_V'] = calculate_mfi(stock_df_graph['High'], stock_df_graph['Low'], stock_df_graph['Close'], stock_df_graph['Volume'], period=21)
@@ -239,38 +226,30 @@ if uploaded_file is not None:
                 stock_df_graph['RS21'] = stock_df_graph['S21d_Returns'] / I21d_Returns if 'I21d_Returns' in locals() else np.nan
                 stock_df_graph['RS55'] = stock_df_graph['S55d_Returns'] / I55d_Returns if 'I55d_Returns' in locals() else np.nan
                 
-                # Create a DataFrame for plotting the ratios
                 plot_df = pd.DataFrame(index=stock_df_graph.index)
                 plot_df['MFI21D / MFI55D'] = stock_df_graph['MFI21_D'] / stock_df_graph['MFI55_D']
                 plot_df['MFI21D / MFI21V'] = stock_df_graph['MFI21_D'] / stock_df_graph['MFI21_V']
                 plot_df['MFI21D / RSI21'] = stock_df_graph['MFI21_D'] / stock_df_graph['RSI21']
                 plot_df['RS21 / RS55'] = stock_df_graph['RS21'] / stock_df_graph['RS55']
 
-                # Take the last 21 days for plotting
                 plot_df = plot_df.tail(21)
 
-                # Create a single figure to hold all the line graphs
                 fig = go.Figure()
 
-                # Add a horizontal line at 1 for the crossover
                 fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
 
-                # Add each ratio as a separate trace
                 fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RS21 / RS55'].dropna(), mode='lines', name='RS21 / RS55'))
                 fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MFI21D / MFI55D'].dropna(), mode='lines', name='MFI21D / MFI55D'))
                 fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MFI21D / MFI21V'].dropna(), mode='lines', name='MFI21D / MFI21V'))
                 fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MFI21D / RSI21'].dropna(), mode='lines', name='MFI21D / RSI21'))
 
-                # Update layout for better readability
                 fig.update_layout(title=f'Dual Momentum Ratios for {selected_symbol}',
                                   xaxis_title="Date",
                                   yaxis_title="Ratio Value",
                                   hovermode="x unified")
-                # Display the combined chart in Streamlit
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("Please enter a valid stock symbol.")
 
 else:
-    # Instructions for first-time use
     st.info("Please upload your 'stock_data.xlsx' file to begin the analysis. The file should contain 'BhavData', 'IndexData', and '52w High' sheets with the specified columns.")
