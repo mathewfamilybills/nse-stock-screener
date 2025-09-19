@@ -190,8 +190,12 @@ if uploaded_file is not None:
             fig = go.Figure()
             fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
 
-            for col in plot_df.columns:
-                fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df[col], mode='lines', name=col))
+            # Define a set of darker, distinct colors
+            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'] # Darker blue, orange, green, red
+
+            for i, col in enumerate(plot_df.columns):
+                fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df[col], mode='lines', name=col,
+                                         line=dict(color=colors[i % len(colors)]))) # Assign color
 
             fig.update_layout(title=f'Dual Momentum Ratios for {selected_symbol}',
                               xaxis_title="Date", yaxis_title="Ratio Value", hovermode="x unified")
