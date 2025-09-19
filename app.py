@@ -191,8 +191,6 @@ if uploaded_file is not None:
             fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
 
             # Define a set of darker, distinct colors
-            # Original: colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'] # Darker blue, orange, green, red
-            # Modified as requested:
             colors = ['#000000', '#ff7f0e', '#1f77b4', '#d62728'] # Black, orange, darker blue, red
 
             for i, col in enumerate(plot_df.columns):
@@ -202,6 +200,11 @@ if uploaded_file is not None:
             fig.update_layout(title=f'Dual Momentum Ratios for {selected_symbol}',
                               xaxis_title="Date", yaxis_title="Ratio Value", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
+            
+            # --- MODIFIED: Display tabular data below the graph ---
+            st.subheader(f"Raw Data for {selected_symbol}")
+            stock_df_display = stock_df_graph.tail(60).copy()
+            st.dataframe(stock_df_display.round(2), use_container_width=True)
             
 else:
     st.info("Please upload your 'stock_data.xlsx' file to begin the analysis.")
