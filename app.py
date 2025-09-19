@@ -74,7 +74,7 @@ if uploaded_file is not None:
         positive_mf = pd.Series(positive_flow).rolling(period).sum()
         negative_mf = pd.Series(negative_flow).rolling(period).sum()
         
-        # Handle division by zero and NaNs
+        # Handle division by zero and NaNs by adding a small value to the denominator
         with np.errstate(divide='ignore', invalid='ignore'):
             mfi = 100 - (100 / (1 + positive_mf / (negative_mf + 1e-9))) # +1e-9 is a small number to prevent division by zero
         return mfi
