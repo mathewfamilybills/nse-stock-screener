@@ -56,12 +56,14 @@ if uploaded_file is not None:
         delta = prices.diff()
         gain = (delta.where(delta > 0, 0)).rolling(period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+        
+        # Handle division by zero
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
         return rsi
 
     def calculate_mfi(high, low, close, volume, period=14):
-        """Calculates the Money Flow Index (MFI)."""
+        """Calculates the Money Flow Index (MFI) with robust error handling."""
         typical_price = (high + low + close) / 3
         money_flow = typical_price * volume
         
@@ -71,7 +73,9 @@ if uploaded_file is not None:
         positive_mf = pd.Series(positive_flow).rolling(period).sum()
         negative_mf = pd.Series(negative_flow).rolling(period).sum()
         
-        mfi = 100 - (100 / (1 + positive_mf / negative_mf))
+        # Handle division by zero and NaNs
+        with np.errstate(divide='ignore', invalid='ignore'):
+            mfi = 100 - (100 / (1 + positive_mf / negative_mf))
         return mfi
 
     # --- Main Analysis Loop ---
@@ -244,15 +248,25 @@ if uploaded_file is not None:
                 # Take the last 21 days for plotting
                 plot_df = plot_df.tail(21)
 
-                # Plotting each ratio in a separate chart
-                for column in plot_df.columns:
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df[column], mode='lines', name=column))
-                    fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
-                    fig.update_layout(title=f'{column} for {selected_symbol}',
-                                    xaxis_title="Date", yaxis_title="Ratio Value",
-                                    hovermode="x unified")
-                    st.plotly_chart(fig, use_container_width=True)
+                # Create a single figure to hold all the line graphs
+                fig = go.Figure()
+
+                # Add a horizontal line at 1 for the crossover
+                fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
+
+                # Add each ratio as a separate trace
+                fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RS21 / RS55'], mode='lines', name='RS21 / RS55'))
+                fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MFI21D / MFI55D'], mode='lines', name='MFI21D / MFI55D'))
+                fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MFI21D / MFI21V'], mode='lines', name='MFI21D / MFI21V'))
+                fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MFI21D / RSI21'], mode='lines', name='MFI21D / RSI21'))
+
+                # Update layout for better readability
+                fig.update_layout(title=f'Dual Momentum Ratios for {selected_symbol}',
+                                  xaxis_title="Date",
+                                  yaxis_title="Ratio Value",
+                                  hovermode="x unified")
+                # Display the combined chart in Streamlit
+                st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("Please enter a valid stock symbol.")
 
