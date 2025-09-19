@@ -9,7 +9,7 @@ st.set_page_config(layout="wide", page_title="NSE Stock Screener")
 st.title("NSE Stock Screener for Short-Term Momentum Trading 📈")
 st.write("Upload your data file to analyze stocks based on a comprehensive set of technical indicators and custom ratios.")
 
-# --- Calculation Functions (Corrected) ---
+# --- Calculation Functions ---
 
 def calculate_rsi(prices, period=21):
     """Calculates a robust Relative Strength Index (RSI)."""
@@ -192,7 +192,14 @@ if uploaded_file is not None:
             plot_df['Mom_Conf'] = graph_data['MFI21_D'] / graph_data['RSI21']
             plot_df['Mom_Osc'] = graph_data['RS21'] / graph_data['RS55']
 
-            plot_df_graph = plot_df[['AD', 'Strength_AD', 'Mom_Conf', 'Mom_Osc']].tail(60) # Only plot these ratios
+            # Create a new DataFrame for plotting with descriptive legend names
+            plot_df_graph = pd.DataFrame(index=plot_df.index)
+            plot_df_graph['AD (MFI21D / MFI55D)'] = plot_df['AD']
+            plot_df_graph['Strength_AD (MFI21D / MFI21V)'] = plot_df['Strength_AD']
+            plot_df_graph['Mom_Conf (MFI21D / RSI21)'] = plot_df['Mom_Conf']
+            plot_df_graph['Mom_Osc (RS21 / RS55)'] = plot_df['Mom_Osc']
+
+            plot_df_graph = plot_df_graph.tail(60) # Only plot these ratios
             
             fig = go.Figure()
             fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
@@ -208,7 +215,7 @@ if uploaded_file is not None:
                               xaxis_title="Date", yaxis_title="Ratio Value", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
             
-            # --- MODIFIED: Display rolling 21-day tabular data below the graph ---
+            # --- Display rolling 21-day tabular data below the graph ---
             st.subheader(f"Rolling 21-Day Data for {selected_symbol}")
             
             # Filter the plot_df for the last 21 days
