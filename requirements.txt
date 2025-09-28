@@ -4,4 +4,6 @@ numpy
 yfinance
 scipy
 openpyxl
+
 plotly
+statsmodels
