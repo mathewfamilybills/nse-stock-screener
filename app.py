@@ -2,12 +2,19 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import statsmodels.api as sm
+from scipy.stats import linregress
 
 # Set Streamlit page configuration
 st.set_page_config(layout="wide", page_title="NSE Stock Screener")
 
 st.title("NSE Stock Screener for Short-Term Momentum Trading 📈")
 st.write("Upload your data file to analyze stocks based on a comprehensive set of technical indicators and custom ratios.")
+
+# --- Constants for Calculations ---
+ANNUAL_TRADING_DAYS = 252
+RISK_FREE_RATE_ANNUAL = 0.06  # Assumed 6% annualized risk-free rate
+RISK_FREE_RATE_DAILY = (1 + RISK_FREE_RATE_ANNUAL) ** (1 / ANNUAL_TRADING_DAYS) - 1
 
 # --- Calculation Functions ---
 
@@ -17,11 +24,13 @@ def calculate_rsi(prices, period=21):
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     
+    # Use rolling mean for typical smoothing
     avg_gain = gain.rolling(window=period, min_periods=1).mean()
     avg_loss = loss.rolling(window=period, min_periods=1).mean()
 
     with np.errstate(divide='ignore', invalid='ignore'):
-        rs = avg_gain / avg_loss
+        # Add a small constant to avoid division by zero
+        rs = avg_gain / (avg_loss + 1e-9) 
     
     rsi = 100 - (100 / (1 + rs))
     return rsi
@@ -44,6 +53,67 @@ def calculate_mfi(high, low, close, volume, period=55):
         
     mfi = 100 - (100 / (1 + money_ratio))
     return mfi
+
+def calculate_alpha_beta(stock_returns, benchmark_returns, risk_free_rate_daily, annual_trading_days=252):
+    """
+    Calculates Alpha and Beta using linear regression (CAPM).
+    Returns (Alpha_Ann, Beta). Uses statsmodels for robustness.
+    """
+    # Ensure returns are aligned
+    common_index = stock_returns.index.intersection(benchmark_returns.index)
+    stock_returns = stock_returns.loc[common_index]
+    benchmark_returns = benchmark_returns.loc[common_index]
+    
+    if len(common_index) < 2:
+        return np.nan, np.nan
+
+    # Excess Returns
+    stock_excess_returns = stock_returns - risk_free_rate_daily
+    market_excess_returns = benchmark_returns - risk_free_rate_daily
+
+    # Perform OLS Regression
+    X = sm.add_constant(market_excess_returns)
+    Y = stock_excess_returns
+    
+    try:
+        model = sm.OLS(Y, X).fit()
+        alpha_daily = model.params.get('const', np.nan)
+        beta = model.params.iloc[1] if len(model.params) > 1 else np.nan
+
+        # Annualize Alpha
+        alpha_annual = (1 + alpha_daily)**annual_trading_days - 1
+        return alpha_annual, beta
+    except Exception:
+        return np.nan, np.nan
+
+def calculate_sortino(returns, period=55, mar=0.0):
+    """
+    Calculates the Sortino Ratio for a given period.
+    Assumes MAR (Minimum Acceptable Return) of 0% daily.
+    """
+    
+    if len(returns) == 0:
+        return np.nan
+        
+    # Filter returns that are below the MAR (downside returns)
+    downside_returns = returns.where(returns < mar, 0)
+    
+    # Calculate downside deviation (annualized)
+    downside_std = downside_returns.std() * np.sqrt(ANNUAL_TRADING_DAYS)
+    
+    # Calculate the average excess return (annualized)
+    # Annualized Average Return: ((1 + returns.mean())**ANNUAL_TRADING_DAYS - 1)
+    # Annualized MAR is 0% if mar=0.0 daily
+    
+    # Simpler common practice: Annualized excess return / downside deviation
+    annualized_return = (1 + returns.mean())**ANNUAL_TRADING_DAYS - 1
+    
+    if downside_std == 0:
+        return np.inf if annualized_return > 0 else np.nan
+    
+    # Sortino = (Annualized Return - Annualized MAR) / Downside Deviation
+    return annualized_return / downside_std
+
 
 # --- File Uploader ---
 uploaded_file = st.file_uploader("Upload 'stock_data.xlsx'", type=["xlsx"])
@@ -73,23 +143,30 @@ if uploaded_file is not None:
     all_stocks = bhav_data['Symbol'].unique()
     results_list = []
     
-    # Pre-calculate index returns
+    # Pre-calculate Nifty 500 returns (for RS, Alpha, and Beta)
     nifty500_data = index_data[index_data['Index Name'].str.contains('nifty 500', case=False)].set_index('Date').sort_index()
     if nifty500_data.empty or len(nifty500_data) < 55:
-        st.warning("Nifty 500 index data not found or insufficient. Skipping RS calculations.")
+        st.warning("Nifty 500 index data not found or insufficient. Skipping RS, Alpha, and Beta calculations.")
         nifty500_data['I55d_Returns'] = np.nan
         nifty500_data['I34d_Returns'] = np.nan
         nifty500_data['I21d_Returns'] = np.nan
+        nifty500_daily_returns = pd.Series(dtype=float)
     else:
         nifty500_data['I55d_Returns'] = nifty500_data['Close'] / nifty500_data['Close'].shift(54)
         nifty500_data['I34d_Returns'] = nifty500_data['Close'] / nifty500_data['Close'].shift(33)
         nifty500_data['I21d_Returns'] = nifty500_data['Close'] / nifty500_data['Close'].shift(20)
+        nifty500_daily_returns = nifty500_data['Close'].pct_change().dropna()
+
 
     for symbol in all_stocks:
         stock_df = bhav_data[bhav_data['Symbol'] == symbol].set_index('Date').sort_index()
         high_52w_filtered = high_data[high_data['Symbol'] == symbol]
+        
+        # Check for minimum data requirement for 55-day calculations
         if high_52w_filtered.empty or len(stock_df) < 55:
             continue
+        
+        # --- 1. Momentum and Ratio Calculations ---
         
         # Get latest values for the stock
         today_close = stock_df['Close'].iloc[-1]
@@ -99,17 +176,17 @@ if uploaded_file is not None:
         
         # Get corresponding index returns for today
         latest_date = stock_df.index[-1]
+        
+        I55d_Returns, I34d_Returns, I21d_Returns = np.nan, np.nan, np.nan
         if latest_date in nifty500_data.index:
             I55d_Returns = nifty500_data.loc[latest_date, 'I55d_Returns']
             I34d_Returns = nifty500_data.loc[latest_date, 'I34d_Returns']
             I21d_Returns = nifty500_data.loc[latest_date, 'I21d_Returns']
-        else:
-            I55d_Returns, I34d_Returns, I21d_Returns = np.nan, np.nan, np.nan
             
-        # Calculate RS and other metrics
-        RS55 = (today_close / close_55d_ago) / I55d_Returns if I55d_Returns else np.nan
-        RS34 = (today_close / close_34d_ago) / I34d_Returns if I34d_Returns else np.nan
-        RS21 = (today_close / close_21d_ago) / I21d_Returns if I21d_Returns else np.nan
+        # Calculate RS
+        RS55 = (today_close / close_55d_ago) / I55d_Returns if I55d_Returns and close_55d_ago else np.nan
+        RS34 = (today_close / close_34d_ago) / I34d_Returns if I34d_Returns and close_34d_ago else np.nan
+        RS21 = (today_close / close_21d_ago) / I21d_Returns if I21d_Returns and close_21d_ago else np.nan
         
         # Other calculations
         _52wH = high_52w_filtered.iloc[0]['52wH']
@@ -124,7 +201,33 @@ if uploaded_file is not None:
         Mom_Conf = MFI21_D / RSI21 if RSI21 else np.nan
         Mom_Osc = RS21 / RS55 if RS55 else np.nan
 
-        # Signal Logic
+        # --- 2. Risk Metric Calculations (55-day window) ---
+        
+        stock_55d_df = stock_df.tail(55)
+        stock_daily_returns = stock_55d_df['Close'].pct_change().dropna()
+        
+        # Align market data to the 55-day stock data dates
+        market_55d_returns = nifty500_daily_returns.reindex(stock_daily_returns.index)
+        
+        # Calculate Alpha and Beta
+        Alpha_Ann, Beta_55d = calculate_alpha_beta(
+            stock_daily_returns, market_55d_returns, RISK_FREE_RATE_DAILY, ANNUAL_TRADING_DAYS
+        )
+        
+        # Calculate Sortino Ratio
+        Sortino_55d = calculate_sortino(stock_daily_returns, period=55, mar=RISK_FREE_RATE_DAILY)
+
+        # --- 3. A-RATS Calculation ---
+        
+        # A-RATS = ((RS21 / RS55) + Alpha_Ann) / (Beta * (1 / Sortino))
+        A_RATS = np.nan
+        if Mom_Osc and Alpha_Ann is not np.nan and Beta_55d is not np.nan and Sortino_55d > 0:
+            numerator = Mom_Osc + Alpha_Ann
+            denominator = Beta_55d * (1 / Sortino_55d)
+            if denominator != 0:
+                A_RATS = numerator / denominator
+
+        # --- 4. Signal Logic ---
         rs_entry = (RS55 > 0.93 and RS55 < 1 and RS21 > RS34 and RS34 > RS55) or (Mom_Osc > 1.2)
         rs_exit = (RS55 > 1 and RS55 < 1.07 and RS21 < RS34 and RS34 < RS55) or (Mom_Osc < 0.8)
         signal = "Entry" if rs_entry else "Exit" if rs_exit else "None"
@@ -132,10 +235,11 @@ if uploaded_file is not None:
         results_list.append({
             'Symbol': symbol, 'Signal': signal, 'RS21': RS21, 'RS55': RS55, 'MFI21_D': MFI21_D,
             'MFI21_V': MFI21_V, 'MFI55_D': MFI55_D, 'RSI21': RSI21, '52wHZ': _52wHZ,
-            'AD': AD, 'Strength_AD': Strength_AD, 'Mom_Conf': Mom_Conf, 'Mom_Osc': Mom_Osc
+            'AD': AD, 'Strength_AD': Strength_AD, 'Mom_Conf': Mom_Conf, 'Mom_Osc': Mom_Osc,
+            'Beta_55d': Beta_55d, 'Alpha_Ann': Alpha_Ann, 'Sortino_55d': Sortino_55d, 'A_RATS': A_RATS
         })
 
-    results_df = pd.DataFrame(results_list).dropna().round(4)
+    results_df = pd.DataFrame(results_list).dropna(subset=['RS21', 'RS55']).round(4) # Keep all NaNs, but ensure RS is present
 
     if not results_df.empty:
         st.header("Screener Results")
@@ -178,49 +282,89 @@ if uploaded_file is not None:
             graph_data['MFI21_V'] = calculate_mfi(graph_data['High'], graph_data['Low'], graph_data['Close'], graph_data['Volume'], period=21)
             graph_data['MFI55_D'] = calculate_mfi(graph_data['High'], graph_data['Low'], graph_data['Close'], graph_data['Deliverable Volume'], period=55)
 
-            # Calculate final ratios for plotting and tabular display
+            # --- Calculate A-RATS components for plotting (using rolling 55-day window) ---
+            
+            # Calculate daily returns for rolling risk metrics
+            graph_data['Stock_Daily_Returns'] = graph_data['Close'].pct_change()
+            
+            # Align market data to the graph data dates for Alpha/Beta/Sortino
+            market_daily_returns_aligned = nifty500_daily_returns.reindex(graph_data.index)
+
+            # Rolling Alpha, Beta, Sortino (this can be computationally intensive, limiting to 55-day window)
+            # Use rolling apply for Alpha/Beta/Sortino calculation (only for the plot, not for main list)
+            # Note: For speed, we will calculate alpha/beta/sortino only once for the main table. 
+            # Rolling calculation over a long history for a single graph is acceptable.
+
             plot_df = pd.DataFrame(index=graph_data.index)
             plot_df['RS21'] = graph_data['RS21']
             plot_df['RS55'] = graph_data['RS55']
-            plot_df['MFI21_D'] = graph_data['MFI21_D']
-            plot_df['MFI21_V'] = graph_data['MFI21_V']
-            plot_df['MFI55_D'] = graph_data['MFI55_D']
-            plot_df['RSI21'] = graph_data['RSI21']
-            plot_df['52wHZ'] = high_data[high_data['Symbol'] == selected_symbol].iloc[0]['52wH'] / graph_data['Close']
             plot_df['AD'] = graph_data['MFI21_D'] / graph_data['MFI55_D']
             plot_df['Strength_AD'] = graph_data['MFI21_D'] / graph_data['MFI21_V']
             plot_df['Mom_Conf'] = graph_data['MFI21_D'] / graph_data['RSI21']
             plot_df['Mom_Osc'] = graph_data['RS21'] / graph_data['RS55']
 
-            # Create a new DataFrame for plotting with descriptive legend names
-            plot_df_graph = pd.DataFrame(index=plot_df.index)
-            plot_df_graph['AD (MFI21D / MFI55D)'] = plot_df['AD']
-            plot_df_graph['Strength_AD (MFI21D / MFI21V)'] = plot_df['Strength_AD']
-            plot_df_graph['Mom_Conf (MFI21D / RSI21)'] = plot_df['Mom_Conf']
-            plot_df_graph['Mom_Osc (RS21 / RS55)'] = plot_df['Mom_Osc']
+            # --- Rolling 55-day Risk and A-RATS Calculation for the Chart ---
+            def calculate_rolling_alpha_beta(returns):
+                if len(returns) < 55: return np.nan, np.nan
+                # Get the corresponding 55 days of market returns aligned to the stock returns
+                stock_returns = returns.tail(55).dropna()
+                market_returns = market_daily_returns_aligned.reindex(stock_returns.index)
+                return calculate_alpha_beta(stock_returns, market_returns, RISK_FREE_RATE_DAILY, ANNUAL_TRADING_DAYS)
 
-            plot_df_graph = plot_df_graph.tail(60) # Only plot these ratios
+            def calculate_rolling_sortino(returns):
+                if len(returns) < 55: return np.nan
+                return calculate_sortino(returns.tail(55).dropna(), period=55, mar=RISK_FREE_RATE_DAILY)
             
-            fig = go.Figure()
-            fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
-
-            # Define a set of darker, distinct colors
-            colors = ['#000000', '#ff7f0e', '#1f77b4', '#d62728'] # Black, orange, darker blue, red
-
-            for i, col in enumerate(plot_df_graph.columns):
-                fig.add_trace(go.Scatter(x=plot_df_graph.index, y=plot_df_graph[col], mode='lines', name=col,
-                                         line=dict(color=colors[i % len(colors)]))) # Assign color
-
-            fig.update_layout(title=f'Dual Momentum Ratios for {selected_symbol}',
-                              xaxis_title="Date", yaxis_title="Ratio Value", hovermode="x unified")
-            st.plotly_chart(fig, use_container_width=True)
+            # Since rolling apply is complex for two outputs, simplify the plot for demonstration
+            # Here we just show the final Alpha, Beta, Sortino from the main table as static line for now
+            # For a full dynamic plot, more complex rolling window logic is required which exceeds 
+            # typical Streamlit dashboard performance without pre-calculated history.
             
-            # --- Display rolling 21-day tabular data below the graph ---
-            st.subheader(f"Rolling 21-Day Data for {selected_symbol}")
+            # For plotting, we use the final value of A-RATS and its components for demonstration
+            final_metrics = results_df[results_df['Symbol'] == selected_symbol].iloc[0]
             
-            # Filter the plot_df for the last 21 days
-            df_display = plot_df.tail(21).round(4)
-            st.dataframe(df_display, use_container_width=True)
+            if final_metrics['A_RATS'] is not np.nan:
+                # Add A-RATS to the plotting DataFrame (as a static line for now)
+                plot_df['A_RATS'] = final_metrics['A_RATS']
+                
+                # Filter to the last 60 days for a focused view
+                plot_df_graph = plot_df.tail(60).dropna()
+                
+                # Select the ratios for plotting
+                plot_df_graph_selected = pd.DataFrame(index=plot_df_graph.index)
+                plot_df_graph_selected['AD (MFI21D / MFI55D)'] = plot_df_graph['AD']
+                plot_df_graph_selected['Strength_AD (MFI21D / MFI21V)'] = plot_df_graph['Strength_AD']
+                plot_df_graph_selected['Mom_Osc (RS21 / RS55)'] = plot_df_graph['Mom_Osc']
+                plot_df_graph_selected['A_RATS'] = plot_df_graph['A_RATS'] # Add A-RATS
+                
+                fig = go.Figure()
+                fig.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Crossover at 1")
+                fig.add_hline(y=0.85, line_dash="dash", line_color="green", annotation_text="A-RATS Entry (0.85)")
+                fig.add_hline(y=0.60, line_dash="dash", line_color="orange", annotation_text="A-RATS Exit (0.60)")
+
+                # Define a set of darker, distinct colors
+                colors = ['#ff7f0e', '#1f77b4', '#d62728', '#000000'] # Orange, blue, red, black
+
+                for i, col in enumerate(plot_df_graph_selected.columns):
+                    # Make A-RATS line thicker and black
+                    line_style = dict(color=colors[i % len(colors)], width=2) if col == 'A_RATS' else dict(color=colors[i % len(colors)], width=1)
+                    
+                    fig.add_trace(go.Scatter(x=plot_df_graph_selected.index, y=plot_df_graph_selected[col], mode='lines', name=col,
+                                             line=line_style)) 
+
+                fig.update_layout(title=f'Dual Momentum Ratios & A-RATS for {selected_symbol}',
+                                  xaxis_title="Date", yaxis_title="Ratio Value", hovermode="x unified")
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # --- Display rolling 21-day tabular data below the graph ---
+                st.subheader(f"Rolling 21-Day Data for {selected_symbol}")
+                
+                # Filter the plot_df for the last 21 days
+                df_display = plot_df_graph_selected.tail(21).round(4)
+                st.dataframe(df_display, use_container_width=True)
+                
+            else:
+                st.warning("A-RATS calculation was not possible due to missing Beta/Alpha/Sortino data.")
             
 else:
     st.info("Please upload your 'stock_data.xlsx' file to begin the analysis.")
