@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import statsmodels.api as sm
+import statsmodels.api as sm  # Required for Alpha/Beta OLS regression
 from scipy.stats import linregress
 
 # Set Streamlit page configuration
@@ -11,9 +11,9 @@ st.set_page_config(layout="wide", page_title="NSE Stock Screener")
 st.title("NSE Stock Screener for Short-Term Momentum Trading 📈")
 st.write("Upload your data file to analyze stocks based on a comprehensive set of technical indicators and custom ratios.")
 
-# --- Constants for Calculations (MODIFIED RISK-FREE RATE) ---
+# --- Constants for Calculations (RISK-FREE RATE) ---
 ANNUAL_TRADING_DAYS = 252
-RISK_FREE_RATE_ANNUAL = 0.03  # MODIFIED: Changed from 0.06 to 0.03
+RISK_FREE_RATE_ANNUAL = 0.03  # Using 3% as a proxy for the annual risk-free rate
 RISK_FREE_RATE_DAILY = (1 + RISK_FREE_RATE_ANNUAL) ** (1 / ANNUAL_TRADING_DAYS) - 1
 
 # --- Calculation Functions ---
@@ -76,7 +76,16 @@ def calculate_alpha_beta(stock_returns, benchmark_returns, risk_free_rate_daily,
     Y = stock_excess_returns
     
     try:
-        model = sm.OLS(Y, X).fit()
+        # Filter out NaN/inf values which OLS can't handle
+        valid_indices = X.isin([np.nan, np.inf, -np.inf]).any(axis=1) | Y.isin([np.nan, np.inf, -np.inf])
+        X_clean = X[~valid_indices]
+        Y_clean = Y[~valid_indices]
+        
+        if len(Y_clean) < 2: # Need at least 2 data points for regression
+            return np.nan, np.nan
+            
+        model = sm.OLS(Y_clean, X_clean).fit()
+        
         alpha_daily = model.params.get('const', np.nan)
         beta = model.params.iloc[1] if len(model.params) > 1 else np.nan
 
@@ -105,9 +114,9 @@ def calculate_sortino(returns, period=55, mar_daily=RISK_FREE_RATE_DAILY):
     annualized_return = (1 + returns.mean())**ANNUAL_TRADING_DAYS - 1
     
     # Sortino = (Annualized Return - Annualized MAR) / Downside Deviation
-    # Since we use daily R_f as MAR, Annualized MAR = R_f_Annual
     
     if downside_std == 0:
+        # If no downside deviation, return a high value if return > MAR, else NaN
         return np.inf if annualized_return > RISK_FREE_RATE_ANNUAL else np.nan
     
     return (annualized_return - RISK_FREE_RATE_ANNUAL) / downside_std
@@ -150,9 +159,11 @@ if uploaded_file is not None:
         nifty500_data['I21d_Returns'] = np.nan
         nifty500_daily_returns = pd.Series(dtype=float)
     else:
+        # Calculate Index Returns for RS
         nifty500_data['I55d_Returns'] = nifty500_data['Close'] / nifty500_data['Close'].shift(54)
         nifty500_data['I34d_Returns'] = nifty500_data['Close'] / nifty500_data['Close'].shift(33)
         nifty500_data['I21d_Returns'] = nifty500_data['Close'] / nifty500_data['Close'].shift(20)
+        # Calculate Daily Index Returns for Alpha/Beta/Sortino
         nifty500_daily_returns = nifty500_data['Close'].pct_change().dropna()
 
 
@@ -194,6 +205,7 @@ if uploaded_file is not None:
         MFI21_V = calculate_mfi(stock_df['High'], stock_df['Low'], stock_df['Close'], stock_df['Volume'], period=21).iloc[-1]
         MFI21_D = calculate_mfi(stock_df['High'], stock_df['Low'], stock_df['Close'], stock_df['Deliverable Volume'], period=21).iloc[-1]
         
+        # Derived Ratios
         AD = MFI21_D / MFI55_D if MFI55_D else np.nan
         Strength_AD = MFI21_D / MFI21_V if MFI21_V else np.nan
         Mom_Conf = MFI21_D / RSI21 if RSI21 else np.nan
@@ -215,12 +227,11 @@ if uploaded_file is not None:
         # Calculate Sortino Ratio
         Sortino_55d = calculate_sortino(stock_daily_returns, period=55, mar_daily=RISK_FREE_RATE_DAILY)
 
-        # --- 3. A-RATS Calculation (with fix for non-positive Sortino) ---
+        # --- 3. A-RATS Calculation ---
         
-        # A-RATS = ((RS21 / RS55) + Alpha_Ann) / (Beta * (1 / Sortino))
         A_RATS = np.nan
         
-        # Check if all required components are available
+        # Check if all required components are available and valid
         if Mom_Osc is not np.nan and Alpha_Ann is not np.nan and Beta_55d is not np.nan and Sortino_55d is not np.nan:
             
             # FIX: If Sortino is non-positive, assign A_RATS = 0.0 (low quality/uninvestable)
@@ -230,12 +241,13 @@ if uploaded_file is not None:
                 numerator = Mom_Osc + Alpha_Ann
                 denominator = Beta_55d * (1 / Sortino_55d)
                 
+                # Check for near-zero denominator to prevent overflow
                 if abs(denominator) < 1e-9:
                     A_RATS = 0.0 
                 else:
                     A_RATS = numerator / denominator
 
-        # --- 4. Signal Logic ---
+        # --- 4. Signal Logic (Original RS conditions preserved) ---
         rs_entry = (RS55 > 0.93 and RS55 < 1 and RS21 > RS34 and RS34 > RS55) or (Mom_Osc > 1.2)
         rs_exit = (RS55 > 1 and RS55 < 1.07 and RS21 < RS34 and RS34 < RS55) or (Mom_Osc < 0.8)
         signal = "Entry" if rs_entry else "Exit" if rs_exit else "None"
@@ -247,9 +259,10 @@ if uploaded_file is not None:
             'Beta_55d': Beta_55d, 'Alpha_Ann': Alpha_Ann, 'Sortino_55d': Sortino_55d, 'A_RATS': A_RATS
         })
 
-    results_df = pd.DataFrame(results_list).dropna(subset=['RS21', 'RS55']).round(4) # Keep all NaNs, but ensure RS is present
+    # Create DataFrame and prepare for display
+    results_df = pd.DataFrame(results_list).dropna(subset=['RS21', 'RS55']).round(4)
     
-    # Replace the numerical 0.0 with '0.0000' string for display consistency
+    # Replace the numerical 0.0 with '0.0000' string for display consistency where needed
     results_df['A_RATS'] = results_df['A_RATS'].apply(lambda x: '0.0000' if x == 0.0 else x)
 
 
@@ -258,10 +271,13 @@ if uploaded_file is not None:
         tab_entry, tab_exit, tab_all = st.tabs(["Entry Signals", "Exit Signals", "All Stocks"])
 
         with tab_entry:
+            st.subheader("Stocks with Favorable Entry Conditions")
             st.dataframe(results_df[results_df['Signal'] == 'Entry'], use_container_width=True)
         with tab_exit:
+            st.subheader("Stocks with Loss of Favorable Conditions (Exit Signals)")
             st.dataframe(results_df[results_df['Signal'] == 'Exit'], use_container_width=True)
         with tab_all:
+            st.subheader("All Stocks and Their Metrics")
             st.dataframe(results_df, use_container_width=True)
 
     # --- Graphing Section ---
@@ -294,7 +310,6 @@ if uploaded_file is not None:
             graph_data['MFI21_V'] = calculate_mfi(graph_data['High'], graph_data['Low'], graph_data['Close'], graph_data['Volume'], period=21)
             graph_data['MFI55_D'] = calculate_mfi(graph_data['High'], graph_data['Low'], graph_data['Close'], graph_data['Deliverable Volume'], period=55)
 
-            # --- Calculate A-RATS components for plotting (using rolling 55-day window) ---
             
             plot_df = pd.DataFrame(index=graph_data.index)
             plot_df['RS21'] = graph_data['RS21']
