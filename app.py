@@ -11,9 +11,9 @@ st.set_page_config(layout="wide", page_title="NSE Stock Screener")
 st.title("NSE Stock Screener for Short-Term Momentum Trading 📈")
 st.write("Upload your data file to analyze stocks based on a comprehensive set of technical indicators and custom ratios.")
 
-# --- Constants for Calculations ---
+# --- Constants for Calculations (MODIFIED RISK-FREE RATE) ---
 ANNUAL_TRADING_DAYS = 252
-RISK_FREE_RATE_ANNUAL = 0.06  # Assumed 6% annualized risk-free rate
+RISK_FREE_RATE_ANNUAL = 0.03  # MODIFIED: Changed from 0.06 to 0.03
 RISK_FREE_RATE_DAILY = (1 + RISK_FREE_RATE_ANNUAL) ** (1 / ANNUAL_TRADING_DAYS) - 1
 
 # --- Calculation Functions ---
@@ -86,33 +86,31 @@ def calculate_alpha_beta(stock_returns, benchmark_returns, risk_free_rate_daily,
     except Exception:
         return np.nan, np.nan
 
-def calculate_sortino(returns, period=55, mar=0.0):
+def calculate_sortino(returns, period=55, mar_daily=RISK_FREE_RATE_DAILY):
     """
     Calculates the Sortino Ratio for a given period.
-    Assumes MAR (Minimum Acceptable Return) of 0% daily.
+    Uses the daily risk-free rate as the MAR (Minimum Acceptable Return).
     """
     
     if len(returns) == 0:
         return np.nan
         
     # Filter returns that are below the MAR (downside returns)
-    downside_returns = returns.where(returns < mar, 0)
+    downside_returns = returns.where(returns < mar_daily, 0)
     
     # Calculate downside deviation (annualized)
     downside_std = downside_returns.std() * np.sqrt(ANNUAL_TRADING_DAYS)
     
     # Calculate the average excess return (annualized)
-    # Annualized Average Return: ((1 + returns.mean())**ANNUAL_TRADING_DAYS - 1)
-    # Annualized MAR is 0% if mar=0.0 daily
-    
-    # Simpler common practice: Annualized excess return / downside deviation
     annualized_return = (1 + returns.mean())**ANNUAL_TRADING_DAYS - 1
     
-    if downside_std == 0:
-        return np.inf if annualized_return > 0 else np.nan
-    
     # Sortino = (Annualized Return - Annualized MAR) / Downside Deviation
-    return annualized_return / downside_std
+    # Since we use daily R_f as MAR, Annualized MAR = R_f_Annual
+    
+    if downside_std == 0:
+        return np.inf if annualized_return > RISK_FREE_RATE_ANNUAL else np.nan
+    
+    return (annualized_return - RISK_FREE_RATE_ANNUAL) / downside_std
 
 
 # --- File Uploader ---
@@ -215,17 +213,27 @@ if uploaded_file is not None:
         )
         
         # Calculate Sortino Ratio
-        Sortino_55d = calculate_sortino(stock_daily_returns, period=55, mar=RISK_FREE_RATE_DAILY)
+        Sortino_55d = calculate_sortino(stock_daily_returns, period=55, mar_daily=RISK_FREE_RATE_DAILY)
 
-        # --- 3. A-RATS Calculation ---
+        # --- 3. A-RATS Calculation (with fix for non-positive Sortino) ---
         
         # A-RATS = ((RS21 / RS55) + Alpha_Ann) / (Beta * (1 / Sortino))
         A_RATS = np.nan
-        if Mom_Osc and Alpha_Ann is not np.nan and Beta_55d is not np.nan and Sortino_55d > 0:
-            numerator = Mom_Osc + Alpha_Ann
-            denominator = Beta_55d * (1 / Sortino_55d)
-            if denominator != 0:
-                A_RATS = numerator / denominator
+        
+        # Check if all required components are available
+        if Mom_Osc is not np.nan and Alpha_Ann is not np.nan and Beta_55d is not np.nan and Sortino_55d is not np.nan:
+            
+            # FIX: If Sortino is non-positive, assign A_RATS = 0.0 (low quality/uninvestable)
+            if Sortino_55d <= 0:
+                A_RATS = 0.0
+            else:
+                numerator = Mom_Osc + Alpha_Ann
+                denominator = Beta_55d * (1 / Sortino_55d)
+                
+                if abs(denominator) < 1e-9:
+                    A_RATS = 0.0 
+                else:
+                    A_RATS = numerator / denominator
 
         # --- 4. Signal Logic ---
         rs_entry = (RS55 > 0.93 and RS55 < 1 and RS21 > RS34 and RS34 > RS55) or (Mom_Osc > 1.2)
@@ -240,6 +248,10 @@ if uploaded_file is not None:
         })
 
     results_df = pd.DataFrame(results_list).dropna(subset=['RS21', 'RS55']).round(4) # Keep all NaNs, but ensure RS is present
+    
+    # Replace the numerical 0.0 with '0.0000' string for display consistency
+    results_df['A_RATS'] = results_df['A_RATS'].apply(lambda x: '0.0000' if x == 0.0 else x)
+
 
     if not results_df.empty:
         st.header("Screener Results")
@@ -284,17 +296,6 @@ if uploaded_file is not None:
 
             # --- Calculate A-RATS components for plotting (using rolling 55-day window) ---
             
-            # Calculate daily returns for rolling risk metrics
-            graph_data['Stock_Daily_Returns'] = graph_data['Close'].pct_change()
-            
-            # Align market data to the graph data dates for Alpha/Beta/Sortino
-            market_daily_returns_aligned = nifty500_daily_returns.reindex(graph_data.index)
-
-            # Rolling Alpha, Beta, Sortino (this can be computationally intensive, limiting to 55-day window)
-            # Use rolling apply for Alpha/Beta/Sortino calculation (only for the plot, not for main list)
-            # Note: For speed, we will calculate alpha/beta/sortino only once for the main table. 
-            # Rolling calculation over a long history for a single graph is acceptable.
-
             plot_df = pd.DataFrame(index=graph_data.index)
             plot_df['RS21'] = graph_data['RS21']
             plot_df['RS55'] = graph_data['RS55']
@@ -303,29 +304,14 @@ if uploaded_file is not None:
             plot_df['Mom_Conf'] = graph_data['MFI21_D'] / graph_data['RSI21']
             plot_df['Mom_Osc'] = graph_data['RS21'] / graph_data['RS55']
 
-            # --- Rolling 55-day Risk and A-RATS Calculation for the Chart ---
-            def calculate_rolling_alpha_beta(returns):
-                if len(returns) < 55: return np.nan, np.nan
-                # Get the corresponding 55 days of market returns aligned to the stock returns
-                stock_returns = returns.tail(55).dropna()
-                market_returns = market_daily_returns_aligned.reindex(stock_returns.index)
-                return calculate_alpha_beta(stock_returns, market_returns, RISK_FREE_RATE_DAILY, ANNUAL_TRADING_DAYS)
-
-            def calculate_rolling_sortino(returns):
-                if len(returns) < 55: return np.nan
-                return calculate_sortino(returns.tail(55).dropna(), period=55, mar=RISK_FREE_RATE_DAILY)
-            
-            # Since rolling apply is complex for two outputs, simplify the plot for demonstration
-            # Here we just show the final Alpha, Beta, Sortino from the main table as static line for now
-            # For a full dynamic plot, more complex rolling window logic is required which exceeds 
-            # typical Streamlit dashboard performance without pre-calculated history.
-            
-            # For plotting, we use the final value of A-RATS and its components for demonstration
+            # For plotting, we use the final value of A-RATS from the main table
             final_metrics = results_df[results_df['Symbol'] == selected_symbol].iloc[0]
             
             if final_metrics['A_RATS'] is not np.nan:
                 # Add A-RATS to the plotting DataFrame (as a static line for now)
-                plot_df['A_RATS'] = final_metrics['A_RATS']
+                # Convert the '0.0000' string back to a float for plotting
+                arats_value = float(final_metrics['A_RATS']) if isinstance(final_metrics['A_RATS'], str) else final_metrics['A_RATS']
+                plot_df['A_RATS'] = arats_value
                 
                 # Filter to the last 60 days for a focused view
                 plot_df_graph = plot_df.tail(60).dropna()
