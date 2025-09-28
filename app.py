@@ -234,7 +234,7 @@ if uploaded_file is not None:
         # Check if all required components are available and valid
         if Mom_Osc is not np.nan and Alpha_Ann is not np.nan and Beta_55d is not np.nan and Sortino_55d is not np.nan:
             
-            # FIX: If Sortino is non-positive, assign A_RATS = 0.0 (low quality/uninvestable)
+            # If Sortino is non-positive, assign A_RATS = 0.0 (low quality/uninvestable)
             if Sortino_55d <= 0:
                 A_RATS = 0.0
             else:
@@ -247,10 +247,29 @@ if uploaded_file is not None:
                 else:
                     A_RATS = numerator / denominator
 
-        # --- 4. Signal Logic (Original RS conditions preserved) ---
-        rs_entry = (RS55 > 0.93 and RS55 < 1 and RS21 > RS34 and RS34 > RS55) or (Mom_Osc > 1.2)
-        rs_exit = (RS55 > 1 and RS55 < 1.07 and RS21 < RS34 and RS34 < RS55) or (Mom_Osc < 0.8)
-        signal = "Entry" if rs_entry else "Exit" if rs_exit else "None"
+        # --- 4. Signal Logic (NEW A-RATS Filtered Conditions) ---
+        
+        # Use A_RATS_val for safety in conditional logic, treating NaN as 0.0 (uninvestable)
+        A_RATS_val = A_RATS if A_RATS is not np.nan else 0.0
+        
+        # Entry Condition: High Quality (>0.85), Consolidation (0.93<RS55<1.05), Momentum Acceleration (>1.0), and Strong Accumulation (AD>1.0, Strength_AD>0.70)
+        entry_condition = (
+            (A_RATS_val > 0.85) and 
+            (RS55 > 0.93 and RS55 < 1.05) and 
+            (Mom_Osc > 1.0) and 
+            (AD > 1.0) and 
+            (Strength_AD > 0.70)
+        )
+
+        # Exit Condition: Either Quality Collapse (A-RATS < 0.60 AND Distribution) OR Momentum Failure (Mom_Osc < 0.95 AND Outperformer)
+        exit_condition = (
+            # Group 1: Quality Collapse
+            (A_RATS_val < 0.60 and AD < 0.90) or
+            # Group 2: Momentum Failure (Outperformer losing short-term momentum)
+            (Mom_Osc < 0.95 and RS55 > 1.0)
+        )
+        
+        signal = "Entry" if entry_condition else "Exit" if exit_condition else "None"
             
         results_list.append({
             'Symbol': symbol, 'Signal': signal, 'RS21': RS21, 'RS55': RS55, 'MFI21_D': MFI21_D,
@@ -271,10 +290,10 @@ if uploaded_file is not None:
         tab_entry, tab_exit, tab_all = st.tabs(["Entry Signals", "Exit Signals", "All Stocks"])
 
         with tab_entry:
-            st.subheader("Stocks with Favorable Entry Conditions")
+            st.subheader("Stocks with Favorable Entry Conditions (A-RATS Filtered)")
             st.dataframe(results_df[results_df['Signal'] == 'Entry'], use_container_width=True)
         with tab_exit:
-            st.subheader("Stocks with Loss of Favorable Conditions (Exit Signals)")
+            st.subheader("Stocks with Loss of Favorable Conditions (A-RATS Exit Signals)")
             st.dataframe(results_df[results_df['Signal'] == 'Exit'], use_container_width=True)
         with tab_all:
             st.subheader("All Stocks and Their Metrics")
