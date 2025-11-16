@@ -37,7 +37,12 @@ if uploaded_file is not None:
         
         # Filter for Nifty 500 index
         nifty_500 = index_data[index_data['Index Name'] == 'Nifty 500'].copy()
-        nifty_500 = nifty_500.sort_values('Index Date').reset_index(drop=True)
+        nifty_500 = nifty_500.sort_values('Index Date')
+        nifty_500 = nifty_500.set_index('Index Date')  # Set date as index for alignment
+        
+        # Pre-calculate Nifty 500 returns for all dates
+        nifty_500['I55d_Returns'] = nifty_500['Closing Index Value'] / nifty_500['Closing Index Value'].shift(55)
+        nifty_500['I21d_Returns'] = nifty_500['Closing Index Value'] / nifty_500['Closing Index Value'].shift(21)
         
         # Get unique symbols
         symbols = bhav_data['SYMBOL'].unique()
@@ -59,13 +64,21 @@ if uploaded_file is not None:
             status_text.text(f"Processing {symbol}... ({idx+1}/{len(symbols)})")
             progress_bar.progress((idx + 1) / len(symbols))
             
-            # Get stock data
+            # Get stock data and set index to Date
             stock_data = bhav_data[bhav_data['SYMBOL'] == symbol].copy()
-            stock_data = stock_data.sort_values('DATE1').reset_index(drop=True)
+            stock_data = stock_data.sort_values('DATE1')
+            stock_data = stock_data.set_index('DATE1')  # Set date as index for alignment
             
             # Skip if insufficient data
             if len(stock_data) < 56:
                 continue
+            
+            # Join with Nifty 500 data to align by date
+            stock_data = stock_data.join(nifty_500[['I55d_Returns', 'I21d_Returns']], how='left')
+            
+            # Forward fill any missing index values
+            stock_data['I55d_Returns'] = stock_data['I55d_Returns'].ffill()
+            stock_data['I21d_Returns'] = stock_data['I21d_Returns'].ffill()
             
             # Get 52-week high data
             high_52w = high_52w_data[high_52w_data['SYMBOL'] == symbol]
@@ -74,25 +87,20 @@ if uploaded_file is not None:
             else:
                 week_52_high = stock_data['HIGH_PRICE'].max()
             
-            # Calculate Returns
-            current_close = stock_data.iloc[-1]['CLOSE_PRICE']
-            close_55d_ago = stock_data.iloc[-56]['CLOSE_PRICE']
-            close_21d_ago = stock_data.iloc[-22]['CLOSE_PRICE']
+            # Calculate Stock Returns
+            stock_data['S55d_Returns'] = stock_data['CLOSE_PRICE'] / stock_data['CLOSE_PRICE'].shift(55)
+            stock_data['S21d_Returns'] = stock_data['CLOSE_PRICE'] / stock_data['CLOSE_PRICE'].shift(21)
             
-            S55d_Returns = current_close / close_55d_ago
-            S21d_Returns = current_close / close_21d_ago
-            
-            # Nifty 500 Returns
-            nifty_current = nifty_500.iloc[-1]['Closing Index Value']
-            nifty_55d_ago = nifty_500.iloc[-56]['Closing Index Value']
-            nifty_21d_ago = nifty_500.iloc[-22]['Closing Index Value']
-            
-            I55d_Returns = nifty_current / nifty_55d_ago
-            I21d_Returns = nifty_current / nifty_21d_ago
+            # Get current values
+            current_close = stock_data['CLOSE_PRICE'].iloc[-1]
+            S55d_Returns = stock_data['S55d_Returns'].iloc[-1]
+            S21d_Returns = stock_data['S21d_Returns'].iloc[-1]
+            I55d_Returns = stock_data['I55d_Returns'].iloc[-1]
+            I21d_Returns = stock_data['I21d_Returns'].iloc[-1]
             
             # Relative Strength
-            RS55 = S55d_Returns / I55d_Returns
-            RS21 = S21d_Returns / I21d_Returns
+            RS55 = S55d_Returns / I55d_Returns if not np.isnan(I55d_Returns) and I55d_Returns != 0 else np.nan
+            RS21 = S21d_Returns / I21d_Returns if not np.isnan(I21d_Returns) and I21d_Returns != 0 else np.nan
             
             # 52-week High Zone
             ltp = current_close
@@ -172,32 +180,39 @@ if uploaded_file is not None:
             stock_data['PSR'] = stock_data['CMF21_D'] / stock_data['CMF55_D']
             stock_data['PMA'] = ((stock_data['CMF21_D'] + (stock_data['MFI21_D'] / 50)) * ((70 - stock_data['RSI21']) / 40))
             
-            # Calculate RS21 and RS55 for each day
-            # Make sure we align stock_data with nifty_500 by date
-            stock_data_len = len(stock_data)
-            nifty_len = len(nifty_500)
+            # Calculate RS21, RS55, and Mom_Osc for last 60 days only (for graphing)
+            # This avoids index errors and focuses on recent data
+            lookback_days = min(60, len(stock_data))
             
-            # We'll calculate from the latest data backwards
-            for i in range(stock_data_len):
-                # Calculate corresponding nifty index (assuming dates are aligned)
-                nifty_idx = nifty_len - stock_data_len + i
-                
-                if nifty_idx >= 55 and i >= 55:
+            for i in range(len(stock_data) - lookback_days, len(stock_data)):
+                if i >= 55:
                     s55_ret = stock_data.iloc[i]['CLOSE_PRICE'] / stock_data.iloc[i-55]['CLOSE_PRICE']
-                    i55_ret = nifty_500.iloc[nifty_idx]['Closing Index Value'] / nifty_500.iloc[nifty_idx-55]['Closing Index Value']
-                    rs55_val = s55_ret / i55_ret
+                    # Use the most recent nifty data for calculation
+                    nifty_idx_current = min(i, len(nifty_500) - 1)
+                    nifty_idx_past = max(0, nifty_idx_current - 55)
+                    i55_ret = nifty_500.iloc[nifty_idx_current]['Closing Index Value'] / nifty_500.iloc[nifty_idx_past]['Closing Index Value']
+                    rs55_val = s55_ret / i55_ret if i55_ret != 0 else np.nan
                 else:
                     rs55_val = np.nan
                 
-                if nifty_idx >= 21 and i >= 21:
+                if i >= 21:
                     s21_ret = stock_data.iloc[i]['CLOSE_PRICE'] / stock_data.iloc[i-21]['CLOSE_PRICE']
-                    i21_ret = nifty_500.iloc[nifty_idx]['Closing Index Value'] / nifty_500.iloc[nifty_idx-21]['Closing Index Value']
-                    rs21_val = s21_ret / i21_ret
+                    # Use the most recent nifty data for calculation
+                    nifty_idx_current = min(i, len(nifty_500) - 1)
+                    nifty_idx_past = max(0, nifty_idx_current - 21)
+                    i21_ret = nifty_500.iloc[nifty_idx_current]['Closing Index Value'] / nifty_500.iloc[nifty_idx_past]['Closing Index Value']
+                    rs21_val = s21_ret / i21_ret if i21_ret != 0 else np.nan
                 else:
                     rs21_val = np.nan
                 
                 if not np.isnan(rs21_val) and not np.isnan(rs55_val) and rs55_val != 0:
                     stock_data.loc[i, 'Mom_Osc'] = rs21_val / rs55_val
+            
+            # Get derived ratios
+            AD = stock_data['AD'].iloc[-1]
+            Strength_Mom = stock_data['Strength_Mom'].iloc[-1]
+            PSR = stock_data['PSR'].iloc[-1]
+            PMA = stock_data['PMA'].iloc[-1]
             
             # Risk Parameters Calculation (55 days)
             last_55_days = stock_data.tail(55).copy()
@@ -256,16 +271,15 @@ if uploaded_file is not None:
             # Check for RS21 crosses
             rs21_yesterday = np.nan
             if len(stock_data) >= 2:
-                i = len(stock_data) - 2
-                if i >= 21:
-                    s21_ret_y = stock_data.iloc[i]['CLOSE_PRICE'] / stock_data.iloc[i-21]['CLOSE_PRICE']
-                    i21_ret_y = nifty_500.iloc[i]['Closing Index Value'] / nifty_500.iloc[i-21]['Closing Index Value']
-                    rs21_yesterday = s21_ret_y / i21_ret_y
+                # Get yesterday's RS21 from the calculated series
+                rs21_yesterday = stock_data['RS21'].iloc[-2]
             
             rs21_crosses_above_1 = (RS21 > 1 and rs21_yesterday <= 1) if not np.isnan(rs21_yesterday) else False
             rs21_crosses_below_1 = (RS21 < 1 and rs21_yesterday >= 1) if not np.isnan(rs21_yesterday) else False
             
-            # Store results with risk parameters
+            # Store results with risk parameters - reset index for stock_data
+            stock_data_reset = stock_data.reset_index()
+            
             results.append({
                 'SYMBOL': symbol,
                 'RS21': RS21,
@@ -288,7 +302,7 @@ if uploaded_file is not None:
                 'Sortino_Ratio': sortino_ratio,
                 'Beta': beta,
                 'Alpha_Annualized': alpha_annualized,
-                'stock_data': stock_data
+                'stock_data': stock_data_reset  # Store reset dataframe
             })
         
         progress_bar.empty()
@@ -442,6 +456,9 @@ if uploaded_file is not None:
                 # Get stock data for selected symbol
                 symbol_data = df_results[df_results['SYMBOL'] == selected_symbol].iloc[0]['stock_data']
                 
+                # Set the index back to DATE1 for plotting
+                symbol_data = symbol_data.set_index('DATE1')
+                
                 if len(symbol_data) >= 55:
                     # Get last 60 days of data
                     plot_data = symbol_data.tail(60).copy()
@@ -486,8 +503,10 @@ if uploaded_file is not None:
                     
                     # Display 21-day table
                     st.subheader(f"Rolling 21-Day Data for {selected_symbol}")
-                    table_data = plot_data.tail(21)[['DATE1', 'AD', 'Strength_Mom', 'Mom_Osc', 'PSR', 'PMA', 'vRATS']].copy()
-                    table_data['DATE1'] = table_data['DATE1'].dt.strftime('%Y-%m-%d')
+                    table_data = plot_data.tail(21)[['AD', 'Strength_Mom', 'Mom_Osc', 'PSR', 'PMA', 'vRATS']].copy()
+                    # Reset index to show dates
+                    table_data = table_data.reset_index()
+                    table_data['DATE1'] = pd.to_datetime(table_data['DATE1']).dt.strftime('%Y-%m-%d')
                     st.dataframe(table_data.style.format({
                         'AD': '{:.4f}', 'Strength_Mom': '{:.4f}', 'Mom_Osc': '{:.4f}',
                         'PSR': '{:.4f}', 'PMA': '{:.4f}', 'vRATS': '{:.4f}'
