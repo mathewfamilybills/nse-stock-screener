@@ -49,6 +49,11 @@ if uploaded_file is not None:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
+        # Ensure we have enough Nifty 500 data
+        if len(nifty_500) < 56:
+            st.error("Insufficient Nifty 500 data. Need at least 56 days of index data.")
+            st.stop()
+        
         # Calculate technical indicators for each symbol
         for idx, symbol in enumerate(symbols):
             status_text.text(f"Processing {symbol}... ({idx+1}/{len(symbols)})")
@@ -59,7 +64,7 @@ if uploaded_file is not None:
             stock_data = stock_data.sort_values('DATE1').reset_index(drop=True)
             
             # Skip if insufficient data
-            if len(stock_data) < 55:
+            if len(stock_data) < 56:
                 continue
             
             # Get 52-week high data
@@ -71,16 +76,16 @@ if uploaded_file is not None:
             
             # Calculate Returns
             current_close = stock_data.iloc[-1]['CLOSE_PRICE']
-            close_55d_ago = stock_data.iloc[-56]['CLOSE_PRICE'] if len(stock_data) >= 56 else stock_data.iloc[0]['CLOSE_PRICE']
-            close_21d_ago = stock_data.iloc[-22]['CLOSE_PRICE'] if len(stock_data) >= 22 else stock_data.iloc[0]['CLOSE_PRICE']
+            close_55d_ago = stock_data.iloc[-56]['CLOSE_PRICE']
+            close_21d_ago = stock_data.iloc[-22]['CLOSE_PRICE']
             
             S55d_Returns = current_close / close_55d_ago
             S21d_Returns = current_close / close_21d_ago
             
             # Nifty 500 Returns
             nifty_current = nifty_500.iloc[-1]['Closing Index Value']
-            nifty_55d_ago = nifty_500.iloc[-56]['Closing Index Value'] if len(nifty_500) >= 56 else nifty_500.iloc[0]['Closing Index Value']
-            nifty_21d_ago = nifty_500.iloc[-22]['Closing Index Value'] if len(nifty_500) >= 22 else nifty_500.iloc[0]['Closing Index Value']
+            nifty_55d_ago = nifty_500.iloc[-56]['Closing Index Value']
+            nifty_21d_ago = nifty_500.iloc[-22]['Closing Index Value']
             
             I55d_Returns = nifty_current / nifty_55d_ago
             I21d_Returns = nifty_current / nifty_21d_ago
@@ -168,17 +173,25 @@ if uploaded_file is not None:
             stock_data['PMA'] = ((stock_data['CMF21_D'] + (stock_data['MFI21_D'] / 50)) * ((70 - stock_data['RSI21']) / 40))
             
             # Calculate RS21 and RS55 for each day
-            for i in range(len(stock_data)):
-                if i >= 55:
+            # Make sure we align stock_data with nifty_500 by date
+            stock_data_len = len(stock_data)
+            nifty_len = len(nifty_500)
+            
+            # We'll calculate from the latest data backwards
+            for i in range(stock_data_len):
+                # Calculate corresponding nifty index (assuming dates are aligned)
+                nifty_idx = nifty_len - stock_data_len + i
+                
+                if nifty_idx >= 55 and i >= 55:
                     s55_ret = stock_data.iloc[i]['CLOSE_PRICE'] / stock_data.iloc[i-55]['CLOSE_PRICE']
-                    i55_ret = nifty_500.iloc[i]['Closing Index Value'] / nifty_500.iloc[i-55]['Closing Index Value']
+                    i55_ret = nifty_500.iloc[nifty_idx]['Closing Index Value'] / nifty_500.iloc[nifty_idx-55]['Closing Index Value']
                     rs55_val = s55_ret / i55_ret
                 else:
                     rs55_val = np.nan
                 
-                if i >= 21:
+                if nifty_idx >= 21 and i >= 21:
                     s21_ret = stock_data.iloc[i]['CLOSE_PRICE'] / stock_data.iloc[i-21]['CLOSE_PRICE']
-                    i21_ret = nifty_500.iloc[i]['Closing Index Value'] / nifty_500.iloc[i-21]['Closing Index Value']
+                    i21_ret = nifty_500.iloc[nifty_idx]['Closing Index Value'] / nifty_500.iloc[nifty_idx-21]['Closing Index Value']
                     rs21_val = s21_ret / i21_ret
                 else:
                     rs21_val = np.nan
@@ -415,13 +428,17 @@ if uploaded_file is not None:
         # Graph Generation Section
         st.header("📈 Generate Ratio Graphs")
         
+        # Sidebar: Symbol selection dropdown
+        st.sidebar.header("Graph Selection")
+        
         # Get all unique symbols from screener results
-        all_symbols = pd.concat([entry_df, exit_df, add_df, book_df])['SYMBOL'].unique()
+        all_symbols = pd.concat([entry_df, exit_df, add_df, book_df])['SYMBOL'].unique() if len(pd.concat([entry_df, exit_df, add_df, book_df])) > 0 else []
         
         if len(all_symbols) > 0:
-            selected_symbol = st.selectbox("Select a stock symbol to view its graph:", sorted(all_symbols))
+            selected_symbol = st.sidebar.selectbox("Select a stock symbol to view its graph:", sorted(all_symbols))
+            generate_button = st.sidebar.button("Generate Graph", type="primary")
             
-            if st.button("Generate Graph"):
+            if generate_button:
                 # Get stock data for selected symbol
                 symbol_data = df_results[df_results['SYMBOL'] == selected_symbol].iloc[0]['stock_data']
                 
@@ -478,6 +495,7 @@ if uploaded_file is not None:
                 else:
                     st.warning(f"Insufficient data for {selected_symbol}. Need at least 55 days of historical data.")
         else:
+            st.sidebar.info("No symbols available. Complete screening first.")
             st.info("No symbols available for graphing. Please check the screening results above.")
         
     except Exception as e:
