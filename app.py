@@ -270,9 +270,10 @@ if uploaded_file is not None:
             
             # Check for RS21 crosses
             rs21_yesterday = np.nan
-            if len(stock_data) >= 2:
+            if len(stock_data) >= 2 and 'RS21' in stock_data.columns:
                 # Get yesterday's RS21 from the calculated series
-                rs21_yesterday = stock_data['RS21'].iloc[-2]
+                # Use iloc for positional access since we have DatetimeIndex
+                rs21_yesterday = stock_data['RS21'].iloc[-2] if not stock_data['RS21'].isna().iloc[-2] else np.nan
             
             rs21_crosses_above_1 = (RS21 > 1 and rs21_yesterday <= 1) if not np.isnan(rs21_yesterday) else False
             rs21_crosses_below_1 = (RS21 < 1 and rs21_yesterday >= 1) if not np.isnan(rs21_yesterday) else False
