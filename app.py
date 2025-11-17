@@ -28,6 +28,137 @@ if 'data_loaded' not in st.session_state:
     st.session_state.high_52w_data = None
     st.session_state.results_df = None
 
+# Function to calculate RSI
+def calculate_rsi(prices, period=21):
+    if len(prices) < period + 1:
+        return 50
+    deltas = np.diff(prices)
+    seed = deltas[:period]
+    up = seed[seed >= 0].sum() / period
+    down = -seed[seed < 0].sum() / period
+    if down == 0:
+        return 100
+    rs = up / down
+    rsi = 100 - (100 / (1 + rs))
+    
+    for delta in deltas[period:]:
+        if delta > 0:
+            upval = delta
+            downval = 0
+        else:
+            upval = 0
+            downval = -delta
+        up = (up * (period - 1) + upval) / period
+        down = (down * (period - 1) + downval) / period
+        if down == 0:
+            rs = 100
+        else:
+            rs = up / down
+        rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+# Function to calculate MFI using delivery data
+def calculate_mfi_delivery(df, period=21):
+    if len(df) < period + 1:
+        return np.nan
+    
+    # Calculate typical price
+    df = df.copy()
+    df['TP'] = (df['HIGH_PRICE'] + df['LOW_PRICE'] + df['CLOSE_PRICE']) / 3
+    
+    # Calculate raw money flow using DELIVERY DATA
+    df['RMF'] = df['TP'] * df['DELIV_QTY']
+    
+    # Identify positive and negative money flow
+    df['TP_Change'] = df['TP'].diff()
+    
+    # Calculate positive and negative money flow
+    positive_mf = 0
+    negative_mf = 0
+    
+    for i in range(len(df) - period, len(df)):
+        if i > 0 and df.iloc[i]['TP_Change'] > 0:
+            positive_mf += df.iloc[i]['RMF']
+        elif i > 0 and df.iloc[i]['TP_Change'] < 0:
+            negative_mf += df.iloc[i]['RMF']
+    
+    if negative_mf == 0:
+        return 100
+    
+    mf_ratio = positive_mf / negative_mf
+    mfi = 100 - (100 / (1 + mf_ratio))
+    
+    return mfi
+
+# Function to calculate CMF using delivery data
+def calculate_cmf_delivery(df, period=21):
+    if len(df) < period:
+        return np.nan
+    
+    df = df.copy()
+    recent_data = df.tail(period)
+    
+    # Calculate Money Flow Multiplier
+    high_low_diff = recent_data['HIGH_PRICE'] - recent_data['LOW_PRICE']
+    # Avoid division by zero
+    high_low_diff = high_low_diff.replace(0, 0.0001)
+    
+    mf_multiplier = ((recent_data['CLOSE_PRICE'] - recent_data['LOW_PRICE']) - 
+                   (recent_data['HIGH_PRICE'] - recent_data['CLOSE_PRICE'])) / high_low_diff
+    
+    # Replace any NaN or inf values
+    mf_multiplier = mf_multiplier.fillna(0)
+    mf_multiplier = mf_multiplier.replace([np.inf, -np.inf], 0)
+    
+    # Calculate Money Flow Volume using DELIVERY DATA
+    mf_volume = mf_multiplier * recent_data['DELIV_QTY']
+    
+    # Calculate CMF
+    total_deliv = recent_data['DELIV_QTY'].sum()
+    if total_deliv == 0:
+        return 0
+    
+    cmf = mf_volume.sum() / total_deliv
+    
+    return cmf
+
+# Function to calculate Max Drawdown
+def calculate_max_drawdown(prices):
+    if len(prices) < 2:
+        return 0
+    cummax = np.maximum.accumulate(prices)
+    drawdown = (prices - cummax) / cummax
+    return drawdown.min()
+
+# Function to calculate Sortino Ratio
+def calculate_sortino(returns, target_return=0):
+    if len(returns) < 2:
+        return 0
+    excess_returns = returns - target_return
+    downside_returns = excess_returns[excess_returns < 0]
+    if len(downside_returns) == 0 or downside_returns.std() == 0:
+        return 0
+    return excess_returns.mean() / downside_returns.std()
+
+# Function to calculate Beta
+def calculate_beta(stock_returns, market_returns):
+    if len(stock_returns) < 2 or len(market_returns) < 2:
+        return 1.0
+    covariance = np.cov(stock_returns, market_returns)[0][1]
+    market_variance = np.var(market_returns)
+    if market_variance == 0:
+        return 1.0
+    return covariance / market_variance
+
+# Function to calculate Alpha (annualized)
+def calculate_alpha(stock_returns, market_returns, beta, rf_rate=0.05):
+    if len(stock_returns) < 2:
+        return 0
+    stock_annual_return = (1 + stock_returns.mean()) ** 252 - 1
+    market_annual_return = (1 + market_returns.mean()) ** 252 - 1
+    alpha = stock_annual_return - (rf_rate + beta * (market_annual_return - rf_rate))
+    return alpha
+
 # Load data when file is uploaded
 if uploaded_file is not None and not st.session_state.data_loaded:
     try:
@@ -72,319 +203,230 @@ india_vix = st.sidebar.number_input(
 
 # Process data if loaded
 if st.session_state.data_loaded and st.session_state.results_df is None:
-    with st.spinner("Calculating technical indicators..."):
-        bhav_data = st.session_state.bhav_data.copy()
-        index_data = st.session_state.index_data.copy()
-        high_52w_data = st.session_state.high_52w_data.copy()
+    bhav_data = st.session_state.bhav_data.copy()
+    index_data = st.session_state.index_data.copy()
+    high_52w_data = st.session_state.high_52w_data.copy()
+    
+    # Get Nifty 500 data
+    nifty_500 = index_data[index_data['Index Name'] == 'Nifty 500'].copy()
+    nifty_500 = nifty_500.sort_values('Index Date').reset_index(drop=True)
+    
+    # Calculate Nifty 500 returns
+    if len(nifty_500) >= 55:
+        latest_nifty = nifty_500.iloc[-1]['Closing Index Value']
+        nifty_55d_ago = nifty_500.iloc[-56]['Closing Index Value']
+        nifty_21d_ago = nifty_500.iloc[-22]['Closing Index Value']
         
-        # Get Nifty 500 data
-        nifty_500 = index_data[index_data['Index Name'] == 'Nifty 500'].copy()
-        nifty_500 = nifty_500.sort_values('Index Date').reset_index(drop=True)
+        I55d_Returns = latest_nifty / nifty_55d_ago
+        I21d_Returns = latest_nifty / nifty_21d_ago
+    else:
+        I55d_Returns = 1.0
+        I21d_Returns = 1.0
+    
+    # Store in session state for graph generation
+    st.session_state.I55d_Returns = I55d_Returns
+    st.session_state.I21d_Returns = I21d_Returns
+    
+    # Process each stock with progress indicator
+    results = []
+    symbols = bhav_data['SYMBOL'].unique()
+    
+    # Create progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # Get Nifty 500 returns for beta calculation
+    nifty_500_sorted = nifty_500.sort_values('Index Date').tail(56)
+    nifty_returns = nifty_500_sorted['Closing Index Value'].pct_change().dropna().values
+    
+    for idx, symbol in enumerate(symbols):
+        # Update progress
+        progress = (idx + 1) / len(symbols)
+        progress_bar.progress(progress)
+        status_text.text(f"Processing {symbol} ({idx + 1}/{len(symbols)})")
         
-        # Calculate Nifty 500 returns
-        if len(nifty_500) >= 55:
-            latest_nifty = nifty_500.iloc[-1]['Closing Index Value']
-            nifty_55d_ago = nifty_500.iloc[-56]['Closing Index Value']
-            nifty_21d_ago = nifty_500.iloc[-22]['Closing Index Value']
-            
-            I55d_Returns = latest_nifty / nifty_55d_ago
-            I21d_Returns = latest_nifty / nifty_21d_ago
+        stock_data = bhav_data[bhav_data['SYMBOL'] == symbol].copy()
+        stock_data = stock_data.sort_values('DATE1').reset_index(drop=True)
+        
+        # Need at least 56 days for calculations
+        if len(stock_data) < 56:
+            continue
+        
+        # Get latest data
+        latest_close = stock_data.iloc[-1]['CLOSE_PRICE']
+        
+        # Calculate returns
+        if len(stock_data) >= 56:
+            close_55d_ago = stock_data.iloc[-56]['CLOSE_PRICE']
+            S55d_Returns = latest_close / close_55d_ago
         else:
-            I55d_Returns = 1.0
-            I21d_Returns = 1.0
+            S55d_Returns = 1.0
         
-        # Function to calculate RSI
-        def calculate_rsi(prices, period=21):
-            deltas = np.diff(prices)
-            seed = deltas[:period]
-            up = seed[seed >= 0].sum() / period
-            down = -seed[seed < 0].sum() / period
-            if down == 0:
-                return 100
-            rs = up / down
-            rsi = 100 - (100 / (1 + rs))
-            
-            for delta in deltas[period:]:
-                if delta > 0:
-                    upval = delta
-                    downval = 0
-                else:
-                    upval = 0
-                    downval = -delta
-                up = (up * (period - 1) + upval) / period
-                down = (down * (period - 1) + downval) / period
-                if down == 0:
-                    rs = 100
-                else:
-                    rs = up / down
-                rsi = 100 - (100 / (1 + rs))
-            return rsi
+        if len(stock_data) >= 22:
+            close_21d_ago = stock_data.iloc[-22]['CLOSE_PRICE']
+            S21d_Returns = latest_close / close_21d_ago
+        else:
+            S21d_Returns = 1.0
         
-        # Function to calculate MFI using delivery data
-        def calculate_mfi_delivery(df, period=21):
-            if len(df) < period + 1:
-                return np.nan
-            
-            # Calculate typical price
-            df = df.copy()
-            df['TP'] = (df['HIGH_PRICE'] + df['LOW_PRICE'] + df['CLOSE_PRICE']) / 3
-            
-            # Calculate raw money flow using DELIVERY DATA
-            df['RMF'] = df['TP'] * df['DELIV_QTY']
-            
-            # Identify positive and negative money flow
-            df['TP_Change'] = df['TP'].diff()
-            
-            # Calculate positive and negative money flow
-            positive_mf = 0
-            negative_mf = 0
-            
-            for i in range(len(df) - period, len(df)):
-                if i > 0 and df.iloc[i]['TP_Change'] > 0:
-                    positive_mf += df.iloc[i]['RMF']
-                elif i > 0 and df.iloc[i]['TP_Change'] < 0:
-                    negative_mf += df.iloc[i]['RMF']
-            
-            if negative_mf == 0:
-                return 100
-            
-            mf_ratio = positive_mf / negative_mf
-            mfi = 100 - (100 / (1 + mf_ratio))
-            
-            return mfi
+        # Calculate RS
+        RS55 = S55d_Returns / I55d_Returns if I55d_Returns != 0 else 1.0
+        RS21 = S21d_Returns / I21d_Returns if I21d_Returns != 0 else 1.0
         
-        # Function to calculate CMF using delivery data
-        def calculate_cmf_delivery(df, period=21):
-            if len(df) < period:
-                return np.nan
-            
-            df = df.copy()
-            recent_data = df.tail(period)
-            
-            # Calculate Money Flow Multiplier
-            mf_multiplier = ((recent_data['CLOSE_PRICE'] - recent_data['LOW_PRICE']) - 
-                           (recent_data['HIGH_PRICE'] - recent_data['CLOSE_PRICE'])) / \
-                          (recent_data['HIGH_PRICE'] - recent_data['LOW_PRICE'])
-            
-            # Replace any NaN or inf values
-            mf_multiplier = mf_multiplier.fillna(0)
-            mf_multiplier = mf_multiplier.replace([np.inf, -np.inf], 0)
-            
-            # Calculate Money Flow Volume using DELIVERY DATA
-            mf_volume = mf_multiplier * recent_data['DELIV_QTY']
-            
-            # Calculate CMF
-            cmf = mf_volume.sum() / recent_data['DELIV_QTY'].sum()
-            
-            return cmf
+        # Calculate previous RS values for crossover detection
+        if len(stock_data) >= 57:
+            prev_close = stock_data.iloc[-2]['CLOSE_PRICE']
+            prev_close_55d_ago = stock_data.iloc[-57]['CLOSE_PRICE']
+            prev_S55d_Returns = prev_close / prev_close_55d_ago
+            RS55_prev = prev_S55d_Returns / I55d_Returns
+        else:
+            RS55_prev = RS55
         
-        # Function to calculate Max Drawdown
-        def calculate_max_drawdown(prices):
-            if len(prices) < 2:
-                return 0
-            cummax = np.maximum.accumulate(prices)
-            drawdown = (prices - cummax) / cummax
-            return drawdown.min()
+        if len(stock_data) >= 23:
+            prev_close = stock_data.iloc[-2]['CLOSE_PRICE']
+            prev_close_21d_ago = stock_data.iloc[-23]['CLOSE_PRICE']
+            prev_S21d_Returns = prev_close / prev_close_21d_ago
+            RS21_prev = prev_S21d_Returns / I21d_Returns
+        else:
+            RS21_prev = RS21
         
-        # Function to calculate Sortino Ratio
-        def calculate_sortino(returns, target_return=0):
-            if len(returns) < 2:
-                return 0
-            excess_returns = returns - target_return
-            downside_returns = excess_returns[excess_returns < 0]
-            if len(downside_returns) == 0 or downside_returns.std() == 0:
-                return 0
-            return excess_returns.mean() / downside_returns.std()
+        # Calculate 52-week High Zone
+        high_52w_row = high_52w_data[high_52w_data['SYMBOL'] == symbol]
+        if len(high_52w_row) > 0:
+            high_52w = high_52w_row.iloc[0]['Adjusted_52_Week_High']
+            wHZ_52 = high_52w / latest_close if latest_close != 0 else 1.0
+        else:
+            wHZ_52 = 1.0
         
-        # Function to calculate Beta
-        def calculate_beta(stock_returns, market_returns):
-            if len(stock_returns) < 2 or len(market_returns) < 2:
-                return 1.0
-            covariance = np.cov(stock_returns, market_returns)[0][1]
-            market_variance = np.var(market_returns)
-            if market_variance == 0:
-                return 1.0
-            return covariance / market_variance
+        # Calculate RSI21
+        if len(stock_data) >= 22:
+            prices_for_rsi = stock_data['CLOSE_PRICE'].values[-22:]
+            RSI21 = calculate_rsi(prices_for_rsi, period=21)
+        else:
+            RSI21 = 50
         
-        # Function to calculate Alpha (annualized)
-        def calculate_alpha(stock_returns, market_returns, beta, rf_rate=0.05):
-            if len(stock_returns) < 2:
-                return 0
-            stock_annual_return = (1 + stock_returns.mean()) ** 252 - 1
-            market_annual_return = (1 + market_returns.mean()) ** 252 - 1
-            alpha = stock_annual_return - (rf_rate + beta * (market_annual_return - rf_rate))
-            return alpha
+        # Calculate MFI using delivery data
+        MFI21_D = calculate_mfi_delivery(stock_data, period=21)
+        MFI55_D = calculate_mfi_delivery(stock_data, period=55)
         
-        # Process each stock
-        results = []
-        symbols = bhav_data['SYMBOL'].unique()
+        # Calculate CMF using delivery data
+        CMF21_D = calculate_cmf_delivery(stock_data, period=21)
+        CMF55_D = calculate_cmf_delivery(stock_data, period=55)
         
-        # Get Nifty 500 returns for beta calculation
-        nifty_500_sorted = nifty_500.sort_values('Index Date').tail(56)
-        nifty_returns = nifty_500_sorted['Closing Index Value'].pct_change().dropna().values
+        # Calculate derived ratios
+        AD = MFI21_D / MFI55_D if MFI55_D != 0 and not np.isnan(MFI55_D) else 1.0
+        Strength_Mom = MFI21_D / RSI21 if RSI21 != 0 and not np.isnan(MFI21_D) else 1.0
+        Mom_Osc = RS21 / RS55 if RS55 != 0 else 1.0
+        PSR = CMF21_D / CMF55_D if CMF55_D != 0 and not np.isnan(CMF55_D) else 1.0
         
-        for symbol in symbols:
-            stock_data = bhav_data[bhav_data['SYMBOL'] == symbol].copy()
-            stock_data = stock_data.sort_values('DATE1').reset_index(drop=True)
-            
-            # Need at least 56 days for calculations
-            if len(stock_data) < 56:
-                continue
-            
-            # Get latest data
-            latest_close = stock_data.iloc[-1]['CLOSE_PRICE']
-            
-            # Calculate returns
-            if len(stock_data) >= 56:
-                close_55d_ago = stock_data.iloc[-56]['CLOSE_PRICE']
-                S55d_Returns = latest_close / close_55d_ago
-            else:
-                S55d_Returns = 1.0
-            
-            if len(stock_data) >= 22:
-                close_21d_ago = stock_data.iloc[-22]['CLOSE_PRICE']
-                S21d_Returns = latest_close / close_21d_ago
-            else:
-                S21d_Returns = 1.0
-            
-            # Calculate RS
-            RS55 = S55d_Returns / I55d_Returns if I55d_Returns != 0 else 1.0
-            RS21 = S21d_Returns / I21d_Returns if I21d_Returns != 0 else 1.0
-            
-            # Calculate 52-week High Zone
-            high_52w_row = high_52w_data[high_52w_data['SYMBOL'] == symbol]
-            if len(high_52w_row) > 0:
-                high_52w = high_52w_row.iloc[0]['Adjusted_52_Week_High']
-                wHZ_52 = high_52w / latest_close if latest_close != 0 else 1.0
-            else:
-                wHZ_52 = 1.0
-            
-            # Calculate RSI21
-            if len(stock_data) >= 22:
-                prices_for_rsi = stock_data['CLOSE_PRICE'].values[-22:]
-                RSI21 = calculate_rsi(prices_for_rsi, period=21)
-            else:
-                RSI21 = 50
-            
-            # Calculate MFI using delivery data
-            MFI21_D = calculate_mfi_delivery(stock_data, period=21)
-            MFI55_D = calculate_mfi_delivery(stock_data, period=55)
-            
-            # Calculate CMF using delivery data
-            CMF21_D = calculate_cmf_delivery(stock_data, period=21)
-            CMF55_D = calculate_cmf_delivery(stock_data, period=55)
-            
-            # Calculate derived ratios
-            AD = MFI21_D / MFI55_D if MFI55_D != 0 and not np.isnan(MFI55_D) else 1.0
-            Strength_Mom = MFI21_D / RSI21 if RSI21 != 0 and not np.isnan(MFI21_D) else 1.0
-            Mom_Osc = RS21 / RS55 if RS55 != 0 else 1.0
-            PSR = CMF21_D / CMF55_D if CMF55_D != 0 and not np.isnan(CMF55_D) else 1.0
-            
-            # Calculate PMA
-            if not np.isnan(CMF21_D) and not np.isnan(MFI21_D):
-                PMA = ((CMF21_D + (MFI21_D / 50)) * ((70 - RSI21) / 40))
-            else:
-                PMA = 0
-            
-            # Risk Parameters
-            recent_55_prices = stock_data['CLOSE_PRICE'].values[-55:]
-            max_dd = calculate_max_drawdown(recent_55_prices)
-            
-            recent_55_returns = stock_data['CLOSE_PRICE'].pct_change().dropna().values[-55:]
-            sortino = calculate_sortino(recent_55_returns)
-            
-            beta = calculate_beta(recent_55_returns, nifty_returns[-55:])
-            alpha = calculate_alpha(recent_55_returns, nifty_returns[-55:], beta)
-            
-            # Calculate 7-day average delivery for PVA signals
-            avg_7d_deliv = stock_data['DELIV_QTY'].tail(7).mean()
-            
-            # PVA Signals
-            tbyb = False
-            tsys = False
-            
-            if len(stock_data) >= 3:
-                # Today's data (index -1)
-                today_close = stock_data.iloc[-1]['CLOSE_PRICE']
-                today_deliv = stock_data.iloc[-1]['DELIV_QTY']
-                
-                # Yesterday's data (index -2)
-                yesterday_close = stock_data.iloc[-2]['CLOSE_PRICE']
-                yesterday_deliv = stock_data.iloc[-2]['DELIV_QTY']
-                
-                # Day before yesterday (index -3)
-                day_before_close = stock_data.iloc[-3]['CLOSE_PRICE']
-                
-                # tbyb: Buy signal
-                if (today_close > yesterday_close and today_deliv > avg_7d_deliv and
-                    yesterday_close > day_before_close and yesterday_deliv > avg_7d_deliv):
-                    tbyb = True
-                
-                # tsys: Sell signal
-                if (today_close < yesterday_close and today_deliv > avg_7d_deliv and
-                    yesterday_close < day_before_close and yesterday_deliv > avg_7d_deliv):
-                    tsys = True
-            
-            # Determine PVA signal
-            if tbyb:
-                pva_signal = "Buy"
-            elif tsys:
-                pva_signal = "Sell"
-            else:
-                pva_signal = "Neutral"
-            
-            # Store results with all calculated indicators
-            results.append({
-                'SYMBOL': symbol,
-                'LTP': latest_close,
-                'RS55': RS55,
-                'RS21': RS21,
-                'RS21_prev': stock_data.iloc[-2]['CLOSE_PRICE'] / stock_data.iloc[-23]['CLOSE_PRICE'] / I21d_Returns if len(stock_data) >= 23 else RS21,
-                'RS55_prev': stock_data.iloc[-2]['CLOSE_PRICE'] / stock_data.iloc[-57]['CLOSE_PRICE'] / I55d_Returns if len(stock_data) >= 57 else RS55,
-                '52wHZ': wHZ_52,
-                'RSI21': RSI21,
-                'MFI21_D': MFI21_D,
-                'MFI55_D': MFI55_D,
-                'CMF21_D': CMF21_D,
-                'CMF55_D': CMF55_D,
-                'AD': AD,
-                'Strength_Mom': Strength_Mom,
-                'Mom_Osc': Mom_Osc,
-                'PSR': PSR,
-                'PMA': PMA,
-                'MaxDD': max_dd,
-                'Sortino': sortino,
-                'Beta': beta,
-                'Alpha': alpha,
-                'PVA': pva_signal,
-                'tbyb': tbyb,
-                'tsys': tsys
-            })
+        # Calculate PMA
+        if not np.isnan(CMF21_D) and not np.isnan(MFI21_D):
+            PMA = ((CMF21_D + (MFI21_D / 50)) * ((70 - RSI21) / 40))
+        else:
+            PMA = 0
         
-        # Create DataFrame
-        results_df = pd.DataFrame(results)
+        # Risk Parameters
+        recent_55_prices = stock_data['CLOSE_PRICE'].values[-55:]
+        max_dd = calculate_max_drawdown(recent_55_prices)
         
-        # Calculate percentile scores for risk parameters
-        results_df['p_MaxDD'] = results_df['MaxDD'].rank(pct=True, ascending=False)  # Less drawdown = higher score
-        results_df['p_Sortino'] = results_df['Sortino'].rank(pct=True, ascending=True)  # Higher Sortino = higher score
-        results_df['p_Beta'] = results_df['Beta'].rank(pct=True, ascending=False)  # Lower Beta = higher score
-        results_df['p_Alpha'] = results_df['Alpha'].rank(pct=True, ascending=True)  # Higher Alpha = higher score
+        recent_55_returns = stock_data['CLOSE_PRICE'].pct_change().dropna().values[-55:]
+        sortino = calculate_sortino(recent_55_returns)
         
-        # Calculate RATS
-        results_df['RATS_raw'] = (results_df['p_MaxDD'] + results_df['p_Sortino'] + 
-                                   results_df['p_Beta'] + results_df['p_Alpha'])
-        results_df['RATS'] = results_df['RATS_raw'].rank(pct=True, ascending=True)
+        beta = calculate_beta(recent_55_returns, nifty_returns[-55:])
+        alpha = calculate_alpha(recent_55_returns, nifty_returns[-55:], beta)
         
-        # Calculate vRATS
-        results_df['vRATS'] = results_df['RATS'] * (india_vix / 15.5)
+        # Calculate 7-day average delivery for PVA signals
+        avg_7d_deliv = stock_data['DELIV_QTY'].tail(7).mean()
         
-        # Detect crossovers
-        results_df['RS21_crosses_above_1'] = (results_df['RS21'] > 1) & (results_df['RS21_prev'] <= 1)
-        results_df['RS21_crosses_below_1'] = (results_df['RS21'] < 1) & (results_df['RS21_prev'] >= 1)
-        results_df['RS55_crosses_above_1'] = (results_df['RS55'] > 1) & (results_df['RS55_prev'] <= 1)
-        results_df['RS55_crosses_below_1'] = (results_df['RS55'] < 1) & (results_df['RS55_prev'] >= 1)
+        # PVA Signals
+        tbyb = False
+        tsys = False
         
-        st.session_state.results_df = results_df
+        if len(stock_data) >= 3:
+            # Today's data (index -1)
+            today_close = stock_data.iloc[-1]['CLOSE_PRICE']
+            today_deliv = stock_data.iloc[-1]['DELIV_QTY']
+            
+            # Yesterday's data (index -2)
+            yesterday_close = stock_data.iloc[-2]['CLOSE_PRICE']
+            yesterday_deliv = stock_data.iloc[-2]['DELIV_QTY']
+            
+            # Day before yesterday (index -3)
+            day_before_close = stock_data.iloc[-3]['CLOSE_PRICE']
+            
+            # tbyb: Buy signal
+            if (today_close > yesterday_close and today_deliv > avg_7d_deliv and
+                yesterday_close > day_before_close and yesterday_deliv > avg_7d_deliv):
+                tbyb = True
+            
+            # tsys: Sell signal
+            if (today_close < yesterday_close and today_deliv > avg_7d_deliv and
+                yesterday_close < day_before_close and yesterday_deliv > avg_7d_deliv):
+                tsys = True
+        
+        # Determine PVA signal
+        if tbyb:
+            pva_signal = "Buy"
+        elif tsys:
+            pva_signal = "Sell"
+        else:
+            pva_signal = "Neutral"
+        
+        # Store results with all calculated indicators
+        results.append({
+            'SYMBOL': symbol,
+            'LTP': latest_close,
+            'RS55': RS55,
+            'RS21': RS21,
+            'RS21_prev': RS21_prev,
+            'RS55_prev': RS55_prev,
+            '52wHZ': wHZ_52,
+            'RSI21': RSI21,
+            'MFI21_D': MFI21_D,
+            'MFI55_D': MFI55_D,
+            'CMF21_D': CMF21_D,
+            'CMF55_D': CMF55_D,
+            'AD': AD,
+            'Strength_Mom': Strength_Mom,
+            'Mom_Osc': Mom_Osc,
+            'PSR': PSR,
+            'PMA': PMA,
+            'MaxDD': max_dd,
+            'Sortino': sortino,
+            'Beta': beta,
+            'Alpha': alpha,
+            'PVA': pva_signal,
+            'tbyb': tbyb,
+            'tsys': tsys
+        })
+    
+    # Clear progress indicators
+    progress_bar.empty()
+    status_text.empty()
+    
+    # Create DataFrame
+    results_df = pd.DataFrame(results)
+    
+    # Calculate percentile scores for risk parameters
+    results_df['p_MaxDD'] = results_df['MaxDD'].rank(pct=True, ascending=False)  # Less drawdown = higher score
+    results_df['p_Sortino'] = results_df['Sortino'].rank(pct=True, ascending=True)  # Higher Sortino = higher score
+    results_df['p_Beta'] = results_df['Beta'].rank(pct=True, ascending=False)  # Lower Beta = higher score
+    results_df['p_Alpha'] = results_df['Alpha'].rank(pct=True, ascending=True)  # Higher Alpha = higher score
+    
+    # Calculate RATS
+    results_df['RATS_raw'] = (results_df['p_MaxDD'] + results_df['p_Sortino'] + 
+                               results_df['p_Beta'] + results_df['p_Alpha'])
+    results_df['RATS'] = results_df['RATS_raw'].rank(pct=True, ascending=True)
+    
+    # Calculate vRATS
+    results_df['vRATS'] = results_df['RATS'] * (india_vix / 15.5)
+    
+    # Detect crossovers
+    results_df['RS21_crosses_above_1'] = (results_df['RS21'] > 1) & (results_df['RS21_prev'] <= 1)
+    results_df['RS21_crosses_below_1'] = (results_df['RS21'] < 1) & (results_df['RS21_prev'] >= 1)
+    results_df['RS55_crosses_above_1'] = (results_df['RS55'] > 1) & (results_df['RS55_prev'] <= 1)
+    results_df['RS55_crosses_below_1'] = (results_df['RS55'] < 1) & (results_df['RS55_prev'] >= 1)
+    
+    st.session_state.results_df = results_df
 
 # Display results if data is processed
 if st.session_state.results_df is not None:
@@ -510,10 +552,14 @@ if st.session_state.results_df is not None:
             stock_data = stock_data.sort_values('DATE1').reset_index(drop=True)
             
             if len(stock_data) >= 55:
+                # Get index returns from session state
+                I55d_Returns = st.session_state.I55d_Returns
+                I21d_Returns = st.session_state.I21d_Returns
+                
                 # Calculate historical ratios for last 60 days
                 hist_data = []
                 for i in range(max(0, len(stock_data) - 60), len(stock_data)):
-                    window_data = stock_data.iloc[:i+1]
+                    window_data = stock_data.iloc[:i+1].copy()
                     
                     if len(window_data) >= 55:
                         # Calculate ratios
@@ -522,8 +568,11 @@ if st.session_state.results_df is not None:
                         CMF21 = calculate_cmf_delivery(window_data, 21)
                         CMF55 = calculate_cmf_delivery(window_data, 55)
                         
-                        prices_rsi = window_data['CLOSE_PRICE'].values[-22:]
-                        RSI21_val = calculate_rsi(prices_rsi, 21)
+                        if len(window_data) >= 22:
+                            prices_rsi = window_data['CLOSE_PRICE'].values[-22:]
+                            RSI21_val = calculate_rsi(prices_rsi, 21)
+                        else:
+                            RSI21_val = 50
                         
                         # Calculate returns
                         latest = window_data.iloc[-1]['CLOSE_PRICE']
@@ -536,13 +585,17 @@ if st.session_state.results_df is not None:
                         RS55_val = S55_ret / I55d_Returns
                         RS21_val = S21_ret / I21d_Returns
                         
-                        AD_val = MFI21 / MFI55 if MFI55 != 0 else 1
-                        Strength_val = MFI21 / RSI21_val if RSI21_val != 0 else 1
+                        AD_val = MFI21 / MFI55 if MFI55 != 0 and not np.isnan(MFI55) else 1
+                        Strength_val = MFI21 / RSI21_val if RSI21_val != 0 and not np.isnan(MFI21) else 1
                         Mom_val = RS21_val / RS55_val if RS55_val != 0 else 1
-                        PSR_val = CMF21 / CMF55 if CMF55 != 0 else 1
-                        PMA_val = ((CMF21 + (MFI21 / 50)) * ((70 - RSI21_val) / 40))
+                        PSR_val = CMF21 / CMF55 if CMF55 != 0 and not np.isnan(CMF55) else 1
                         
-                        # Get vRATS for this date
+                        if not np.isnan(CMF21) and not np.isnan(MFI21):
+                            PMA_val = ((CMF21 + (MFI21 / 50)) * ((70 - RSI21_val) / 40))
+                        else:
+                            PMA_val = 0
+                        
+                        # Get vRATS for this stock
                         vRATS_val = results_df[results_df['SYMBOL'] == selected_symbol]['vRATS'].values[0]
                         
                         hist_data.append({
@@ -613,4 +666,18 @@ if st.session_state.results_df is not None:
                 st.plotly_chart(fig, use_container_width=True)
                 
                 # Display 21-day table
-                st.subheader(f"21-Day Data for {selected_symbol}")
+                st.subheader(f"21-Day Rolling Data for {selected_symbol}")
+                recent_21_days = hist_df.tail(21).copy()
+                recent_21_days['Date'] = recent_21_days['Date'].dt.strftime('%Y-%m-%d')
+                
+                # Round values for better display
+                for col in ['AD', 'Strength_Mom', 'Mom_Osc', 'PSR', 'PMA', 'vRATS']:
+                    recent_21_days[col] = recent_21_days[col].round(4)
+                
+                st.dataframe(recent_21_days, use_container_width=True, hide_index=True)
+            else:
+                st.warning(f"Insufficient data for {selected_symbol}. Need at least 55 days of historical data.")
+    else:
+        st.info("No symbols available for graphing. Please check the screening results above.")
+else:
+    st.info("Please upload the stock_data.xlsx file to begin analysis.")
